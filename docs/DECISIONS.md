@@ -331,3 +331,54 @@ Consequences: Fewer reply chains leak into the main body, so dedup compares
 cleaner bodies and fewer header lines become headings. Stripping =01
 apostrophes loses the character ("Int=01,l" becomes "Int,l"). The gaps above
 are visible, not hidden. Heading detection is still a heuristic.
+
+## D-021: Duplicate detection
+Date: 2026-10-11
+Status: Accepted
+Context: Spec defines a duplicate as same from_address, same subject
+after normalizing Re:/Fwd:, and body at least 90% similar; the earliest
+is the original, later ones are flagged. Exploration showed most
+same-body files are storage copies (one email filed in several folders
+or mailboxes, each with its own Message-ID, same date). Those are not
+re-sends.
+Decision:
+1. Two stages. Stage 1 collapses storage copies. Stage 2 runs the
+   spec's rule on what's left.
+2. Stage 1: content_hash = SHA-256 of from_address, date (UTC ISO),
+   subject as written, body, quoted_content, forwarded_content, joined
+   with a separator. Rows with the same hash are one logical email.
+   Canonical row = the one with the smallest source_file. Others get
+   copy_of = canonical message_id. Canonical rows keep copy_of NULL.
+3. Stage 2 runs only on canonical rows.
+4. Normalized subject: strip any number of leading Re:/RE:/Fw:/FW:/
+   Fwd: prefixes (case-insensitive, optional spaces, e.g. "Re: FW: re:"),
+   collapse whitespace, lowercase.
+5. Blocking key: (from_address, normalized subject). Recipients are not
+   part of the rule, per the spec.
+6. Compared text: main body, whitespace collapsed. If both main bodies
+   are empty, compare body + forwarded_content + quoted_content instead,
+   so two content-free forwards aren't 100% similar by default.
+7. Metric: rapidfuzz.fuzz.ratio, 0 to 100. Duplicate if >= 90.0.
+8. Grouping, no chaining: within a block, sort by (date, source_file).
+   The earliest unassigned row is an original. Every later unassigned
+   row scoring >= 90 against that original is flagged. Repeat with the
+   next unassigned row as a new original. A row is compared only to
+   originals, never to other duplicates.
+9. Flagged rows: is_duplicate = 1, duplicate_of = original message_id,
+   similarity_score set. Storage copies of a flagged row are not
+   flagged themselves; they're reachable through copy_of.
+10. Automated mail (same sender and subject many times) is flagged if
+    it meets the rule. The spec doesn't exempt it. The README notes it.
+11. duplicates_report.csv at the repo root: duplicate_message_id,
+    original_message_id, subject, from_address, duplicate_date,
+    original_date, similarity_score. One row per flagged email, sorted
+    by original then duplicate date.
+12. Stats: storage-copy groups and rows collapsed, duplicate groups
+    (original plus its duplicates), emails flagged, average group size,
+    largest group. Returned and written to output/dedup_stats.json.
+13. dedup receives a DB connection and the threshold as arguments. It
+    reads and writes only through db functions.
+Consequences: Folder and cross-mailbox copies never trigger
+notifications. Only re-sends by the same sender with the same subject
+are flagged. No chaining, so every reported score is against the
+original and at least 90.

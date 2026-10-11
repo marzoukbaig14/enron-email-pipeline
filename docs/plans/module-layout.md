@@ -113,6 +113,9 @@ def init_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> No
 def insert_email(conn: sqlite3.Connection, record: EmailRecord) -> int                # returns emails.id
 def insert_parse_failure(conn: sqlite3.Connection, failure: ParseFailure) -> None
 def mark_notified(conn: sqlite3.Connection, message_id: str, when: datetime) -> None
+def load_emails(conn: sqlite3.Connection, canonical_only: bool = False) -> list[EmailRecord]   # D-021: for dedup
+def replace_storage_copies(conn, content_hashes: Mapping[str, str], copy_of: Mapping[str, str]) -> None
+def replace_duplicate_flags(conn, flags: Iterable[DuplicateFlag]) -> None
 ```
 
 `init_schema` drops every existing table and rebuilds from `schema.sql`, so each run starts clean (D-018). `schema_path=None` means the repo-root `schema.sql`. It commits any open transaction.
@@ -122,6 +125,8 @@ def mark_notified(conn: sqlite3.Connection, message_id: str, when: datetime) -> 
 Transactions: `connect` sets `isolation_level=None`, so only the SQL written out starts or ends a transaction. `insert_email` runs inside a `SAVEPOINT`. If the caller opened a transaction (`BEGIN`), a failed insert undoes only itself and the caller commits. If not, the insert is its own transaction and is committed on return. `insert_parse_failure` does not commit.
 
 *Change from the first version of this plan (D-018): `insert_email` returned an `InsertStatus` ("inserted", "duplicate_message_id", "duplicate_source_file") instead of raising. It now raises and returns the new row id, and `InsertStatus` is removed. `init_schema` now drops existing tables first. "Functions do not commit" became the savepoint rule above, so an insert is atomic whether or not the caller has a transaction open.*
+
+*Added for dedup (D-021 item 13: dedup reads and writes only through db functions).* `load_emails` reads rows back as `EmailRecord` in id order (`canonical_only=True` skips rows with `copy_of` set; `recipients` is not loaded). `replace_storage_copies` and `replace_duplicate_flags` write dedup's two stages. "Replace" means each first clears what an earlier run left, so rerunning dedup, or running it at another threshold, leaves nothing stale. They touch only their own columns (never `notification_*`), raise `ValueError` for a `message_id` that is not in the table instead of silently updating nothing, run inside a savepoint like `insert_email`, and do not commit.
 
 Must NOT: parse, find duplicates, send, or import dedup/notify.
 
@@ -140,7 +145,9 @@ class ExtractionStats:
     failed: int
     failures_by_reason: dict[str, int]
     field_counts: dict[str, int]     # populated count per STATS_FIELDS entry
+    has_attachment_true: int         # parsed emails whose has_attachment is True
     def completeness(self) -> dict[str, float]    # percent 0-100 of parsed emails
+    def has_attachment_true_percent(self) -> float   # percent 0-100 of parsed emails; 0.0 if none parsed
     def to_dict(self) -> dict                     # the extraction_stats.json shape
 
 def process_file(maildir: Path, source_file: str, body_parser: BodyParser) -> EmailRecord   # raises ParseError
@@ -160,7 +167,7 @@ def write_stats(stats: ExtractionStats, path: Path) -> None   # output/extractio
 
 The body parser is a required argument. `main.py` passes `parse_body.parse_body`, and `ingest` never imports `parse_body`, so it can be tested with a fake. It is called positionally as `body_parser(raw_body, content_type, content_transfer_encoding)`. The object it returns needs the `ParsedBody` attributes. `content_hash` is not set yet (open question 4).
 
-Completeness is a percent of parsed emails that have a populated value: non-null and non-empty, where whitespace-only text and empty lists count as empty. `has_attachment` is a boolean and never null, so it always counts. Recipient lists are reported as `to_addresses`, `cc_addresses` and `bcc_addresses`, as in the spec.
+Completeness is a percent of parsed emails that have a populated value: non-null and non-empty, where whitespace-only text and empty lists count as empty. `has_attachment` is a boolean and never null, so it always counts and its completeness is always 100%. The informative number is reported separately as `has_attachment_true_percent` (percent of parsed emails where it is True), in the console report and in `extraction_stats.json`. Recipient lists are reported as `to_addresses`, `cc_addresses` and `bcc_addresses`, as in the spec.
 
 *Change from the first version of this plan (D-018): `inserted` and `skipped_existing` are removed, because the database is rebuilt on every run and a duplicate is now a logged failure. `failures_by_reason`, `to_dict`, `format_stats` and `write_stats` are added. `process_file` takes the `source_file` string and a `body_parser`, and `ingest_mailboxes` takes the `body_parser`. "Re-running is safe because `source_file` is UNIQUE" is gone: a re-run starts from an empty database.*
 
@@ -171,21 +178,31 @@ Must NOT: do header or body parsing itself, run dedup or notify, read config (se
 
 ```python
 def normalize_subject(subject: str) -> str                           # strips Re:/Fwd:/Fw: prefixes
-def default_similarity(a: str, b: str) -> float                      # 0-100, rapidfuzz-backed
-def mark_storage_copies(conn: sqlite3.Connection) -> int             # sets copy_of via content_hash; returns rows marked
+def default_similarity(a: str, b: str) -> float                      # 0-100, rapidfuzz.fuzz.ratio
+def content_hash_for(email: EmailRecord) -> str                      # SHA-256 of the stage 1 fields (D-021 item 2)
+def mark_storage_copies(conn: sqlite3.Connection) -> StorageCopyStats   # stage 1: fills content_hash, sets copy_of
 def flag_duplicates(
     conn: sqlite3.Connection,
     threshold: float = 90.0,
     similarity: Callable[[str, str], float] = default_similarity,
 ) -> list[DuplicateFlag]
-def summarize(flags: Sequence[DuplicateFlag]) -> DedupStats           # groups, flagged, avg group size
+def summarize(flags: Sequence[DuplicateFlag], storage: StorageCopyStats | None = None) -> DedupStats
 def write_report(flags: Sequence[DuplicateFlag], path: Path) -> None  # duplicates_report.csv
+def write_stats(stats: DedupStats, path: Path) -> None                # output/dedup_stats.json
+
+StorageCopyStats(groups, rows)
+DedupStats(storage_copy_groups, storage_copy_rows, duplicate_groups, emails_flagged,
+           average_group_size, largest_group_size)
 ```
 
 `flag_duplicates` groups on `from_address` plus the normalized subject, compares bodies, treats the earliest as the original, and sets `is_duplicate`, `duplicate_of` and `similarity_score` on every later one. It returns the flags it set. The similarity function is a parameter, so swapping the metric touches nothing else.
 
-Inputs: a DB connection. Dedup runs its own SQL against `schema.sql`.
-Must NOT: import db, ingest or notify, send anything, set `notification_*`.
+Behavior is fixed by D-021: stage 1 collapses storage copies, stage 2 runs the spec rule on canonical rows only, with no chaining.
+
+Inputs: a DB connection and the threshold. Dedup reads and writes through the `db` functions above and runs no SQL of its own.
+Must NOT: import ingest or notify, send anything, set `notification_*`.
+
+*Changes from the first version of this plan (D-021): dedup now imports `db` (D-021 item 13; the table in section 6 changes from "models" to "models, db"). `mark_storage_copies` returns `StorageCopyStats(groups, rows)` instead of an int, because the stats need the group count. `DedupStats` gained the storage-copy numbers and `largest_group_size`, and `groups` is now `duplicate_groups`. `content_hash_for`, `StorageCopyStats` and `write_stats` are new. `content_hash` is computed by dedup from the stored columns, not by ingest, so `parse_body.compute_content_hash` is no longer needed.*
 
 ### notify.py
 **Responsibility:** render the spec notification and hand it to a sender.
@@ -225,6 +242,7 @@ class Settings:
     maildir: Path = Path("data/maildir")
     db_path: Path = Path("output/enron.db")
     output_dir: Path = Path("output")
+    error_log: Path = Path("error_log.txt")        # repo root: a spec deliverable
     mailboxes: tuple[str, ...] | None = MAILBOXES  # D-013; None would mean every mailbox
     similarity_threshold: float = 90.0
     send_live: bool = False
@@ -245,7 +263,17 @@ python main.py [--maildir PATH] [--db PATH] [--output-dir PATH]
                [--mailboxes A B ...] [--threshold 90] [--send-live]
 ```
 
-Runs: init db -> ingest -> dedup -> notify with `DryRunSender`, or the live sender when `--send-live` is set -> write outputs. Wires results between modules, for example `SendResult` -> `db.mark_notified`. Without `--send-live` nothing is ever sent.
+```python
+def settings_from_args(argv: Sequence[str] | None = None) -> Settings
+def run_pipeline(settings: Settings, body_parser=parse_body) -> ExtractionStats
+def main(argv: Sequence[str] | None = None) -> int
+```
+
+- `settings_from_args` starts from `default_settings()` and applies the flags. `--output-dir` also moves the database to `<output-dir>/enron.db` unless `--db` is given. The error log stays at `Settings.error_log` (repo root) whatever `--output-dir` says. `--mailboxes` replaces the D-013 list.
+- `run_pipeline` is the pipeline sequence, kept apart from argument parsing so tests can call it with a `Settings` and a fake `body_parser`. It creates the output folder, rebuilds the database (`db.init_schema`), runs `ingest.ingest_mailboxes` with `body_parser` (default: the real `parse_body`), writes `output/extraction_stats.json` and prints `format_stats`. It raises `FileNotFoundError` for a missing maildir or mailbox.
+- `main` turns that `FileNotFoundError` into a one-line `error: ...` on stderr and exit code 1; success returns 0.
+
+Wired so far: init db and ingest. Dedup and notify are marked `TODO` in `run_pipeline` and print a "not implemented yet" line. `--send-live` is accepted and prints a note that it has no effect yet. Planned, once those modules exist: dedup -> notify with `DryRunSender`, or the live sender when `--send-live` is set -> write outputs, wiring results between modules, for example `SendResult` -> `db.mark_notified`. Without `--send-live` nothing is ever sent.
 
 Must NOT: contain parsing, SQL, or notification-rendering logic.
 
@@ -368,7 +396,7 @@ Not module output, handled separately later: `sample_queries.sql`, `mcp_config.j
 | parse_body | models |
 | discover | nothing |
 | db | models |
-| dedup | models |
+| dedup | models, db |
 | notify | models |
 | ingest | models, discover, parse_headers, parse_body, db |
 | main.py | everything |
@@ -377,13 +405,13 @@ Not module output, handled separately later: `sample_queries.sql`, `mcp_config.j
 - No module other than `ingest` and `main` imports a sibling (besides `models`).
 - `ingest` does not import `dedup` or `notify`. `main` runs those stages.
 - Third-party libraries stay inside the one module that needs them (the fuzzy library in `dedup` only).
-- `dedup` and `db` both run SQL against `schema.sql`. That is a deliberate, schema-level coupling, not an import.
+- `dedup` calls `db` functions for every read and write (D-021 item 13), so it does import `db`. It still does not run its own SQL.
 
 ## 7. Open points to confirm
 
 1. **Extra shared types.** You named `EmailRecord` and `ParseFailure`. I added `Recipient`, `ParseError`, `DuplicateFlag` and `SendResult` to `models.py`, because two modules each need them. `ParsedHeaders`, `ParsedBody`, `OutgoingEmail` and the stats types stay in the module that produces them.
 2. **Parsers raise `ParseError` for bad input** instead of returning a result object. ingest converts it to a `ParseFailure` and adds the timestamp.
 3. **`EmailRecord` carries the DB-managed columns** (with defaults) so it is literally 1:1 with `emails`.
-4. **`content_hash` input is not defined in D-012.** The skeleton only stubs `compute_content_hash`. The definition (body only vs body plus sender and subject) and how `copy_of` interacts with fuzzy `is_duplicate` belong to the dedup plan.
+4. **`content_hash` input** was not defined in D-012. Resolved by D-021: SHA-256 of from_address, date (UTC ISO), subject as written, body, quoted_content and forwarded_content, computed by dedup (`content_hash_for`). A flagged row's storage copies are not flagged; they stay reachable through `copy_of`.
 5. **Who gets a notification.** The spec says one email per duplicate group to the sender of the latest duplicate, but also wants drafts for all flagged duplicates. The signatures above work either way, because `send_notifications` sends whatever flags it is given. Which flags `main.py` passes is for you to decide before the notifier is built.
 6. **Similarity scale.** I used 0-100 with a default threshold of 90.0, to match the spec's percentage wording and the `schema.sql` REAL column.

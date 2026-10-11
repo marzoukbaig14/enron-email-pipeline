@@ -7,7 +7,7 @@ name = "enron-pipeline"
 version = "0.1.0"
 description = "Enron email extraction, storage, duplicate detection and notification pipeline"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["rapidfuzz>=3.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

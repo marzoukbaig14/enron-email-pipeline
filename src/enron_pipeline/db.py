@@ -11,13 +11,20 @@ caller opened with BEGIN, a failed insert undoes only itself and the caller
 commits later. With no transaction open, the savepoint is the transaction and
 is committed when insert_email returns.
 
+Also holds the functions dedup uses to read emails and to write its results
+(D-021 item 13): load_emails, replace_storage_copies and
+replace_duplicate_flags. They only move data; deciding what is a duplicate is
+dedup's job.
+
 Does not parse, find duplicates, or send. Imports: models only.
 """
 import sqlite3
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from enron_pipeline.models import EmailRecord, ParseFailure
+from enron_pipeline.models import DuplicateFlag, EmailRecord, ParseFailure
 
 # src/enron_pipeline/db.py -> parents[2] is the repo root.
 DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema.sql"
@@ -39,6 +46,7 @@ _INSERT_EMAIL = (
 _INSERT_RECIPIENT = (
     "INSERT INTO recipients (email_id, address, kind, position) VALUES (?, ?, ?, ?)"
 )
+_SELECT_EMAILS = f"SELECT id, {', '.join(_EMAIL_COLUMNS)} FROM emails"
 _INSERT_FAILURE = (
     "INSERT INTO parse_failures (source_file, reason, failed_at) VALUES (?, ?, ?)"
 )
@@ -141,9 +149,131 @@ def insert_parse_failure(conn: sqlite3.Connection, failure: ParseFailure) -> Non
     )
 
 
+def load_emails(
+    conn: sqlite3.Connection, canonical_only: bool = False
+) -> list[EmailRecord]:
+    """Read emails back as EmailRecord, in insert order (by id).
+
+    `canonical_only=True` skips storage copies (rows whose copy_of is set).
+    Recipients are NOT loaded: `recipients` is the empty tuple. Dedup does not
+    need them and loading them would cost one extra query per email.
+    """
+    sql = _SELECT_EMAILS
+    if canonical_only:
+        sql += " WHERE copy_of IS NULL"
+    sql += " ORDER BY id"
+    names = ("id", *_EMAIL_COLUMNS)
+    return [_record_from_row(dict(zip(names, values))) for values in conn.execute(sql)]
+
+
+def replace_storage_copies(
+    conn: sqlite3.Connection,
+    content_hashes: Mapping[str, str],
+    copy_of: Mapping[str, str],
+) -> None:
+    """Store dedup stage 1: content_hash per email, and copy_of for the copies.
+
+    Both mappings are keyed by message_id. `copy_of` maps a copy to its
+    canonical row's message_id. Every earlier copy_of is cleared first, so the
+    result is exactly what is passed in (a rerun leaves nothing stale). A
+    message_id that is not in the table raises ValueError, and so does a
+    canonical id that is not (foreign key); either way nothing is changed. Does
+    not commit.
+    """
+    with _savepoint(conn, "replace_storage_copies"):
+        conn.execute("UPDATE emails SET copy_of = NULL WHERE copy_of IS NOT NULL")
+        _update_each(
+            conn,
+            "UPDATE emails SET content_hash = ? WHERE message_id = ?",
+            ((hash_, message_id) for message_id, hash_ in content_hashes.items()),
+        )
+        _update_each(
+            conn,
+            "UPDATE emails SET copy_of = ? WHERE message_id = ?",
+            ((canonical, message_id) for message_id, canonical in copy_of.items()),
+        )
+
+
+def replace_duplicate_flags(
+    conn: sqlite3.Connection, flags: Iterable[DuplicateFlag]
+) -> None:
+    """Store dedup stage 2: is_duplicate, duplicate_of, similarity_score.
+
+    Every earlier flag is cleared first, so the result is exactly the flags
+    passed in. Touches only those three columns (never copy_of or
+    notification_*). An unknown duplicate_message_id raises ValueError, an
+    unknown original raises sqlite3.IntegrityError; either way nothing is
+    changed. Does not commit.
+    """
+    with _savepoint(conn, "replace_duplicate_flags"):
+        conn.execute(
+            "UPDATE emails SET is_duplicate = 0, duplicate_of = NULL,"
+            " similarity_score = NULL"
+            " WHERE is_duplicate = 1 OR duplicate_of IS NOT NULL"
+            " OR similarity_score IS NOT NULL"
+        )
+        _update_each(
+            conn,
+            "UPDATE emails SET is_duplicate = 1, duplicate_of = ?,"
+            " similarity_score = ? WHERE message_id = ?",
+            (
+                (f.original_message_id, f.similarity_score, f.duplicate_message_id)
+                for f in flags
+            ),
+        )
+
+
 def mark_notified(conn: sqlite3.Connection, message_id: str, when: datetime) -> None:
     """Set notification_sent = 1 and notification_date on one email."""
     raise NotImplementedError
+
+
+def _record_from_row(row: dict) -> EmailRecord:
+    """One emails row (column name -> value) as an EmailRecord."""
+    row["date"] = _parse_iso(row["date"])
+    if row["notification_date"] is not None:
+        row["notification_date"] = _parse_iso(row["notification_date"])
+    for flag_column in ("has_attachment", "is_duplicate", "notification_sent"):
+        row[flag_column] = bool(row[flag_column])
+    return EmailRecord(**row)
+
+
+def _parse_iso(text: str) -> datetime:
+    """ISO 8601 UTC text ending in "Z" -> timezone-aware datetime.
+
+    Python 3.10's fromisoformat does not accept a trailing "Z", so it is
+    swapped for "+00:00" first.
+    """
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+@contextmanager
+def _savepoint(conn: sqlite3.Connection, name: str) -> Iterator[None]:
+    """Run a block all-or-nothing, the way insert_email does.
+
+    With no transaction open the savepoint is the transaction and commits when
+    the block ends. Inside a caller's BEGIN it only nests, so the caller
+    decides when to commit.
+    """
+    conn.execute(f"SAVEPOINT {name}")
+    try:
+        yield
+    except BaseException:
+        conn.execute(f"ROLLBACK TO {name}")
+        conn.execute(f"RELEASE {name}")
+        raise
+    conn.execute(f"RELEASE {name}")
+
+
+def _update_each(conn: sqlite3.Connection, sql: str, rows: Iterable[tuple]) -> None:
+    """Run a one-row UPDATE ... WHERE message_id = ? per tuple.
+
+    The message_id is the last value of each tuple. An UPDATE that matches no
+    row would be a silent no-op, so it raises ValueError instead.
+    """
+    for values in rows:
+        if conn.execute(sql, values).rowcount != 1:
+            raise ValueError(f"no email with message_id {values[-1]!r}")
 
 
 def _iso(value: datetime) -> str:

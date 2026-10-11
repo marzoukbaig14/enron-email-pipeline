@@ -15,6 +15,9 @@
 -- Expected output: at most 10 rows, one per sender, busiest first (ties
 --   broken by address). email_count is a positive integer and the counts
 --   never increase down the list.
+-- Real result (D-013 mailboxes, 18,165 emails): 10 rows. The top three are
+--   sally.beck@enron.com 4225, m..presto@enron.com 785 and
+--   andrea.ring@enron.com 462; the 10th is mike.jordan@enron.com 212.
 -- Columns: from_address, email_count
 SELECT from_address,
        COUNT(*) AS email_count
@@ -32,6 +35,8 @@ LIMIT 10;
 -- Expected output: one row per matching email. Every date lies between
 --   2001-05-01T00:00:00Z and 2001-05-31T23:59:59Z. Zero rows is valid if the
 --   selected mailboxes have nothing in that month.
+-- Real result (D-013 mailboxes): 1,041 rows. The first is
+--   2001-05-01T00:10:00Z, paul.y'barbo@enron.com, "US Natural Gas Prices".
 -- Columns: date, from_address, subject
 SELECT date,
        from_address,
@@ -50,6 +55,9 @@ ORDER BY date, id;
 --   with cc_count >= 1 and counts never increasing down the list. Emails
 --   with no CC recipients do not appear. (Bcc mirrors Cc in this corpus, so
 --   it is not counted here.)
+-- Real result (D-013 mailboxes): 5,526 rows. The first is "Revised LNG Team
+--   List" from kathleen.hardeman@enron.com with cc_count 81, followed by
+--   several kathie.grabstald@enron.com "News Deadline" mailings with 54-56.
 -- Columns: message_id, from_address, subject, cc_count
 SELECT e.message_id,
        e.from_address,
@@ -69,6 +77,8 @@ ORDER BY cc_count DESC, e.date, e.id;
 -- Expected output: one row per distinct reason, such as "missing to", with
 --   its count. The counts add up to the number of lines in error_log.txt.
 --   Zero rows means nothing failed.
+-- Real result (D-013 mailboxes): 1 row, "missing to" with 626, the same as
+--   the 626 lines of error_log.txt.
 -- Columns: reason, failure_count
 SELECT reason,
        COUNT(*) AS failure_count
@@ -81,8 +91,10 @@ ORDER BY failure_count DESC, reason;
 -- Shows: how the stored emails split across the selected mailboxes (D-013),
 --   largest first.
 -- Expected output: one row per ingested mailbox (at most 5 with the default
---   set; beck-s is expected to be the largest). email_count is a positive
---   integer, and the counts add up to the total number of rows in emails.
+--   set). email_count is a positive integer, and the counts add up to the
+--   total number of rows in emails.
+-- Real result (D-013 mailboxes): 5 rows adding up to 18,165: beck-s 11555,
+--   baughman-d 2638, presto-k 2134, ybarbo-p 1175, ring-a 663.
 -- Columns: mailbox, email_count
 SELECT mailbox,
        COUNT(*) AS email_count
