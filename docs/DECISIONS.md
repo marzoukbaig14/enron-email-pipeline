@@ -520,3 +520,47 @@ Decision:
 Consequences: A typo in --mailboxes no longer destroys the previous
 database. A run on any subset of mailboxes needs no code change. Changing
 a default means editing config.py only.
+
+## D-026: Notification body layout
+Date: 2026-10-11
+Status: Accepted
+Context: The first live send showed the notice body with a blank line
+between every line and no indentation. The spec's template is a Word
+document in which each line was its own paragraph, so those blank lines
+are an artifact of the document, not a layout the spec asks for. The
+words of the template are the requirement.
+Decision: amends D-022 item 1 ("following the spec template exactly"):
+1. The notice body keeps every word of the spec template, in order, and
+   is laid out as below. Blank lines separate blocks only, labels are
+   indented, and the values in the Flagged and Original blocks line up
+   (labels padded so values start in the same column):
+
+   This is an automated notification from the Email Deduplication System.
+
+   Your email has been identified as a potential duplicate:
+
+     Your Email (Flagged):
+       Message-ID:  <message id of the flagged email>
+       Date Sent:   <date of the flagged email>
+       Subject:     <subject of the flagged email>
+
+     Original Email on Record:
+       Message-ID:  <message id of the original>
+       Date Sent:   <date of the original>
+
+     Similarity Score: <score with 2 decimals>%
+
+   If this was NOT a duplicate and you intended to send this email,
+   please reply with CONFIRM to restore it to active status.
+
+   No action is required if this is indeed a duplicate.
+
+2. One renderer produces the body for both the .eml drafts and the live
+   email. The four header lines (To, Subject, Date, References) and the
+   blank line after them are unchanged: real headers in a draft, the
+   first lines of the body in a live email (D-024 item 5).
+3. A golden test compares a full rendered notice to a fixed string,
+   exactly. A second test keeps the template's words in the right order,
+   so a wording change fails even if the layout is right.
+Consequences: Drafts and live emails read as a normal notice. Changing
+the layout later means changing the golden string on purpose.

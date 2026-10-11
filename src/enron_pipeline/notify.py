@@ -8,8 +8,10 @@ here, by McpSender.
 
 The message follows the template in the assignment, section 4.2. Its four
 header lines (To, Subject, Date, References) are OutgoingEmail fields, and the
-rest is the body. The spec shows a blank line between every template line, and
-the body keeps that spacing.
+rest is the body. The body has every word of the template, in order, laid out
+as D-026 says: blocks indented, values aligned, blank lines only between
+blocks. (The spec shows a blank line between every line, but that is an
+artifact of the Word document it came from.)
 """
 import csv
 import re
@@ -45,6 +47,11 @@ SEND_TIMEOUT_SECONDS = 60.0
 _DRAFT_NAME = re.compile(r"\d+_.*\.eml")
 _UNSAFE_FILE_CHARS = re.compile(r"[^A-Za-z0-9._-]")
 _MAX_ID_IN_NAME = 120
+
+# In the notice's two blocks, a label plus its colon is padded to this width so
+# the values start in the same column (D-026): "Message-ID:" + 2 spaces,
+# "Date Sent:" + 3, "Subject:" + 5.
+_LABEL_WIDTH = 13
 
 
 @dataclass(frozen=True)
@@ -317,31 +324,49 @@ def render_notification(flag: DuplicateFlag, now: datetime) -> OutgoingEmail:
     8601 UTC like the database, and the score has two decimals and a "%".
     The subject is built from the ORIGINAL email's subject (notice_subject);
     the body's "Subject:" line under "Your Email (Flagged)" is the flagged
-    email's own. Newlines are removed from the header subject so it cannot
-    break the header.
+    email's own. Newlines are removed from both so they cannot break the
+    header or the layout.
+
+    The body is laid out as D-026 says. It is built from blocks, joined by one
+    blank line each; the labels inside a block are indented and padded so the
+    values line up. One function renders both the .eml drafts and the live
+    email.
     """
-    lines = [
-        "This is an automated notification from the Email Deduplication System.",
-        "Your email has been identified as a potential duplicate:",
-        "Your Email (Flagged):",
-        f"Message-ID: {flag.duplicate_message_id}",
-        f"Date Sent: {_iso(flag.duplicate_date)}",
-        f"Subject: {flag.subject}",
-        "Original Email on Record:",
-        f"Message-ID: {flag.original_message_id}",
-        f"Date Sent: {_iso(flag.original_date)}",
-        f"Similarity Score: {flag.similarity_score:.2f}%",
-        "If this was NOT a duplicate and you intended to send this email,",
-        "please reply with CONFIRM to restore it to active status.",
-        "No action is required if this is indeed a duplicate.",
+    flagged = [
+        "  Your Email (Flagged):",
+        _field("Message-ID", flag.duplicate_message_id),
+        _field("Date Sent", _iso(flag.duplicate_date)),
+        _field("Subject", _one_line(flag.subject)),
+    ]
+    original = [
+        "  Original Email on Record:",
+        _field("Message-ID", flag.original_message_id),
+        _field("Date Sent", _iso(flag.original_date)),
+    ]
+    blocks = [
+        ["This is an automated notification from the Email Deduplication System."],
+        ["Your email has been identified as a potential duplicate:"],
+        flagged,
+        original,
+        [f"  Similarity Score: {flag.similarity_score:.2f}%"],
+        [
+            "If this was NOT a duplicate and you intended to send this email,",
+            "please reply with CONFIRM to restore it to active status.",
+        ],
+        ["No action is required if this is indeed a duplicate."],
     ]
     return OutgoingEmail(
         to=flag.from_address,
         subject=notice_subject(flag.original_subject),
         date=now,
         references=flag.duplicate_message_id,
-        body="\n\n".join(lines) + "\n",
+        body="\n\n".join("\n".join(block) for block in blocks) + "\n",
     )
+
+
+def _field(label: str, value: str) -> str:
+    """One indented "Label:  value" line, with the label padded so values align."""
+    return f"    {label + ':':<{_LABEL_WIDTH}}{value}".rstrip()  # rstrip: an empty value leaves no trailing spaces
 
 
 def notice_subject(original_subject: str) -> str:

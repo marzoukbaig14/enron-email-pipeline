@@ -1,10 +1,12 @@
-"""Tests for notify.py and the notification stage in main.py (D-022, amended by D-024).
+"""Tests for notify.py and the notification stage in main.py (D-022, amended by D-024, D-026).
 
 Layout of this file:
-- Rendering: the body is checked character for character against the template
-  in docs/assignment.md (section 4.2). One test reads the quoted template out
-  of the spec file and fills in the placeholders; another compares against a
-  hand-written literal, so the two guard each other.
+- Rendering: the notice has the words of the template in docs/assignment.md
+  (section 4.2), in order, laid out as D-026 says (indented blocks, blank lines
+  only between blocks; the spec's blank line between every line is a Word
+  artifact). One test reads the quoted template out of the spec file and
+  compares the words; the golden test compares a whole notice to a fixed
+  string, exactly, so the layout is pinned too.
 - Dry run: DryRunSender writes real RFC 822 drafts that email.parser reads back.
 - Live: which flags are chosen (latest per group, capped by --limit), who the
   real recipient is, and that live mode refuses to start without NOTIFY_TO.
@@ -40,6 +42,7 @@ from enron_pipeline.notify import (
     McpSender,
     OutgoingEmail,
     Sender,
+    live_body,
     render_notification,
     select_live_flags,
     send_notifications,
@@ -136,13 +139,20 @@ def test_the_spec_template_is_found_and_has_the_expected_shape():
     assert len([l for l in body if l]) == 13
 
 
-def test_body_matches_the_spec_template_character_for_character():
+def words_of(lines) -> list[str]:
+    """The non-blank lines with each line's runs of whitespace collapsed to one space."""
+    return [" ".join(line.split()) for line in lines if line.strip()]
+
+
+def test_body_has_every_word_of_the_spec_template_in_order():
+    # Layout is D-026's (indents, alignment, blank lines between blocks only), so
+    # compare the words: same lines, same order, same filled-in values.
     flag = make_flag()
     _, template_body = spec_template()
 
     message = render_notification(flag, NOW)
 
-    assert message.body == "\n".join(fill(template_body, flag)) + "\n"
+    assert words_of(message.body.splitlines()) == words_of(fill(template_body, flag))
 
 
 def test_headers_match_the_spec_template():
@@ -157,36 +167,83 @@ def test_headers_match_the_spec_template():
     assert filled[3] == f"References: {message.references}"
 
 
-def test_body_matches_a_hand_written_literal():
+def test_golden_a_full_rendered_notice_matches_the_fixed_text_exactly():
+    # What a live email contains: the four header lines, a blank line, then the notice.
+    # (A draft has the same four lines as real headers and the same notice as its body.)
     flag = make_flag(subject="Q2 numbers", score=97.5)
     expected = (
+        "To: phillip.allen@enron.com\n"
+        "Subject: [Duplicate Notice] Re: Q2 numbers\n"
+        "Date: Sun, 11 Oct 2026 18:30:05 +0000\n"
+        "References: <dup1@thyme>\n"
+        "\n"
         "This is an automated notification from the Email Deduplication System.\n"
         "\n"
         "Your email has been identified as a potential duplicate:\n"
         "\n"
-        "Your Email (Flagged):\n"
+        "  Your Email (Flagged):\n"
+        "    Message-ID:  <dup1@thyme>\n"
+        "    Date Sent:   2001-05-14T23:39:00Z\n"
+        "    Subject:     Q2 numbers\n"
         "\n"
-        "Message-ID: <dup1@thyme>\n"
+        "  Original Email on Record:\n"
+        "    Message-ID:  <orig@thyme>\n"
+        "    Date Sent:   2001-05-10T09:00:00Z\n"
         "\n"
-        "Date Sent: 2001-05-14T23:39:00Z\n"
-        "\n"
-        "Subject: Q2 numbers\n"
-        "\n"
-        "Original Email on Record:\n"
-        "\n"
-        "Message-ID: <orig@thyme>\n"
-        "\n"
-        "Date Sent: 2001-05-10T09:00:00Z\n"
-        "\n"
-        "Similarity Score: 97.50%\n"
+        "  Similarity Score: 97.50%\n"
         "\n"
         "If this was NOT a duplicate and you intended to send this email,\n"
-        "\n"
         "please reply with CONFIRM to restore it to active status.\n"
         "\n"
         "No action is required if this is indeed a duplicate.\n"
     )
-    assert render_notification(flag, NOW).body == expected
+    assert live_body(render_notification(flag, NOW)) == expected
+
+
+def test_blank_lines_only_separate_blocks_and_nothing_trails():
+    body = render_notification(make_flag(), NOW).body
+    lines = body.split("\n")
+    assert lines[-1] == "" and lines[-2] != ""  # exactly one newline at the end
+    assert all(line == line.rstrip() for line in lines)  # no trailing spaces
+    assert "\n\n\n" not in body  # never two blank lines in a row
+    blocks = [block.split("\n") for block in body.rstrip("\n").split("\n\n")]
+    assert [len(block) for block in blocks] == [1, 1, 4, 3, 1, 2, 1]
+
+
+def test_a_blank_subject_leaves_no_trailing_spaces():
+    body = render_notification(make_flag(subject=""), NOW).body
+    assert "\n    Subject:\n" in body
+    assert all(line == line.rstrip() for line in body.split("\n"))
+
+
+def test_a_newline_in_the_flagged_subject_cannot_break_the_layout():
+    body = render_notification(make_flag(subject="two\r\nlines"), NOW).body
+    assert "\n    Subject:     two lines\n" in body
+    assert "\n\n\n" not in body
+
+
+def test_values_in_the_two_blocks_start_in_the_same_column():
+    body = render_notification(make_flag(subject="Q2 numbers"), NOW).body
+    value_columns = {
+        line.index(value)
+        for line, value in [
+            ("    Message-ID:  <dup1@thyme>", "<dup1@thyme>"),
+            ("    Date Sent:   2001-05-14T23:39:00Z", "2001-05-14T23:39:00Z"),
+            ("    Subject:     Q2 numbers", "Q2 numbers"),
+            ("    Message-ID:  <orig@thyme>", "<orig@thyme>"),
+            ("    Date Sent:   2001-05-10T09:00:00Z", "2001-05-10T09:00:00Z"),
+        ]
+        if line in body.split("\n")
+    }
+    assert value_columns == {17}  # 4 spaces + the 13-character label field
+
+
+def test_the_draft_and_the_live_email_share_one_notice_text(tmp_path):
+    message = render_notification(make_flag(), NOW)
+    send_notifications([make_flag()], DryRunSender(tmp_path), now=NOW)
+    [draft] = tmp_path.glob("*.eml")
+    assert read_draft(draft).get_content() == message.body  # D-026 item 2
+    assert live_body(message).endswith("\n\n" + message.body)
 
 
 # --- rendered fields --------------------------------------------------------------------
@@ -228,8 +285,8 @@ def test_subject_comes_from_the_original_not_from_the_flagged_email():
 def test_the_body_subject_line_stays_the_flagged_emails_own_subject():
     flag = make_flag(subject="Re: Q2 numbers", original_subject="Q2 numbers")
     body = render_notification(flag, NOW).body
-    assert "Your Email (Flagged):\n\nMessage-ID: <dup1@thyme>\n\nDate Sent: 2001-05-14T23:39:00Z\n\nSubject: Re: Q2 numbers\n\n" in body
-    assert "Subject: Q2 numbers" not in body.replace("Subject: Re: Q2 numbers", "")
+    assert "  Your Email (Flagged):\n    Message-ID:  <dup1@thyme>\n    Date Sent:   2001-05-14T23:39:00Z\n    Subject:     Re: Q2 numbers\n\n" in body
+    assert "Q2 numbers" not in body.replace("Re: Q2 numbers", "")
 
 
 def test_a_draft_subject_uses_the_original_subject(tmp_path):
@@ -270,7 +327,7 @@ def test_similarity_has_two_decimals_and_a_percent_sign(score, shown):
 def test_non_utc_dates_are_shown_as_utc():
     pacific = timezone(timedelta(hours=-7))
     flag = make_flag(duplicate_date=datetime(2001, 5, 14, 16, 39, tzinfo=pacific))
-    assert "Date Sent: 2001-05-14T23:39:00Z" in render_notification(flag, NOW).body
+    assert "Date Sent:   2001-05-14T23:39:00Z" in render_notification(flag, NOW).body
 
 
 def test_a_newline_in_the_subject_cannot_break_the_header():
@@ -380,7 +437,7 @@ def test_a_non_ascii_subject_survives_the_round_trip(tmp_path):
     [draft] = tmp_path.glob("*.eml")
     parsed = read_draft(draft)
     assert parsed["Subject"] == "[Duplicate Notice] Re: Réunion budget \u2013 Q2"
-    assert "Subject: Réunion budget \u2013 Q2" in parsed.get_content()
+    assert "Subject:     Réunion budget \u2013 Q2" in parsed.get_content()
 
 
 def test_dry_run_result_says_dry_run_and_names_the_enron_sender(tmp_path):
