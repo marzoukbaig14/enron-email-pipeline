@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from enron_pipeline import notify
-from enron_pipeline.config import MAILBOXES, Settings
+from enron_pipeline import dedup, notify
+from enron_pipeline.config import MAILBOXES, Settings, default_settings
 from enron_pipeline.models import SendResult, SendStatus
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -462,6 +462,7 @@ def test_live_mode_refuses_to_start_without_notify_to(
 
     captured = capsys.readouterr()
     assert "NOTIFY_TO" in captured.err
+    assert "--notify-to" in captured.err  # D-025: the message names both ways to give it
     assert "Traceback" not in captured.err
     # It refused before doing any work: nothing was ingested or written.
     assert not dup_settings.db_path.exists()
@@ -583,3 +584,300 @@ def test_a_missing_maildir_is_a_clean_error(tmp_path, monkeypatch, capsys):
     code = main_module.main(["--maildir", str(tmp_path / "nope"), "--output-dir", str(tmp_path / "o")])
     assert code == 1
     assert "nope" in capsys.readouterr().err
+
+
+# --- the parameter-driven command line (D-025) ---------------------------------------------------
+#
+# The fixture maildir has two mailboxes: beck-s (3 files, 2 parse) and ring-a (1 file).
+# `cli` runs main() from a scratch "repo root", so the default error_log.txt and
+# duplicates_report.csv land in tmp_path, never in the real repo.
+
+
+@pytest.fixture
+def cli(tmp_path, maildir, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("NOTIFY_TO", raising=False)
+
+    def run(*args, maildir_path=None):
+        argv = [
+            "--maildir", str(maildir_path or maildir),
+            "--output-dir", str(tmp_path / "out"),
+            *args,
+        ]
+        return main_module.main(argv)
+
+    return run
+
+
+def mailboxes_in_db(tmp_path) -> list[str]:
+    conn = sqlite3.connect(tmp_path / "out" / "enron.db")
+    try:
+        return [m for (m,) in conn.execute("SELECT DISTINCT mailbox FROM emails ORDER BY mailbox")]
+    finally:
+        conn.close()
+
+
+def make_precious_db(tmp_path) -> bytes:
+    """A database from an earlier run. A failed check must leave it byte for byte alone."""
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    conn = sqlite3.connect(out / "enron.db")
+    conn.execute("CREATE TABLE emails (marker TEXT)")
+    conn.execute("INSERT INTO emails VALUES ('from the previous run')")
+    conn.commit()
+    conn.close()
+    return (out / "enron.db").read_bytes()
+
+
+def assert_nothing_was_written(tmp_path, precious=None):
+    assert not (tmp_path / "error_log.txt").exists()
+    assert not (tmp_path / "duplicates_report.csv").exists()
+    out = tmp_path / "out"
+    if precious is None:
+        assert not out.exists()  # not even the output folder
+    else:
+        assert sorted(p.name for p in out.iterdir()) == ["enron.db"]
+        assert (out / "enron.db").read_bytes() == precious
+
+
+def test_a_run_with_one_mailbox_ingests_only_that_mailbox(cli, tmp_path, capsys):
+    assert cli("--mailboxes", "ring-a") == 0
+    assert mailboxes_in_db(tmp_path) == ["ring-a"]
+    assert count(tmp_path / "out" / "enron.db", "emails") == 1
+    assert json.loads((tmp_path / "out" / "extraction_stats.json").read_text())["total_found"] == 1
+    assert "Total files found: 1" in capsys.readouterr().out
+
+
+def test_a_run_with_one_other_mailbox(cli, tmp_path):
+    assert cli("--mailboxes", "beck-s") == 0
+    assert mailboxes_in_db(tmp_path) == ["beck-s"]
+    assert count(tmp_path / "out" / "enron.db", "emails") == 2  # the third file has no To
+
+
+def test_a_run_with_two_mailboxes(cli, tmp_path):
+    assert cli("--mailboxes", "beck-s", "ring-a") == 0
+    assert mailboxes_in_db(tmp_path) == ["beck-s", "ring-a"]
+    assert count(tmp_path / "out" / "enron.db", "emails") == 3
+
+
+def test_any_number_of_mailboxes_works(cli, tmp_path, maildir):
+    write_email(maildir, "presto-k/inbox/1.", {"Message-ID": "<5@thyme>"})
+    write_email(maildir, "ybarbo-p/inbox/1.", {"Message-ID": "<6@thyme>"})
+    assert cli("--mailboxes", "beck-s", "ring-a", "presto-k", "ybarbo-p") == 0
+    assert mailboxes_in_db(tmp_path) == ["beck-s", "presto-k", "ring-a", "ybarbo-p"]
+
+
+def test_the_order_of_the_names_does_not_change_the_result(cli, tmp_path):
+    assert cli("--mailboxes", "ring-a", "beck-s") == 0
+    first = [
+        row for row in sqlite3.connect(tmp_path / "out" / "enron.db").execute(
+            "SELECT message_id, source_file FROM emails ORDER BY id"
+        )
+    ]
+    assert cli("--mailboxes", "beck-s", "ring-a") == 0
+    second = [
+        row for row in sqlite3.connect(tmp_path / "out" / "enron.db").execute(
+            "SELECT message_id, source_file FROM emails ORDER BY id"
+        )
+    ]
+    assert first == second  # discover sorts, so the database is the same either way
+
+
+def test_a_nonexistent_mailbox_is_a_clean_error(cli, tmp_path, capsys):
+    assert cli("--mailboxes", "no-such-x") == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error:")
+    assert "no-such-x" in captured.err
+    assert "Traceback" not in captured.err
+    assert len(captured.err.strip().splitlines()) == 1  # one clear line
+    assert captured.out == ""  # no stage ran
+    assert_nothing_was_written(tmp_path)
+
+
+def test_a_nonexistent_mailbox_leaves_the_previous_database_untouched(cli, tmp_path):
+    precious = make_precious_db(tmp_path)
+    assert cli("--mailboxes", "no-such-x") == 1
+    assert_nothing_was_written(tmp_path, precious)
+
+
+def test_one_missing_mailbox_among_good_ones_stops_everything(cli, tmp_path, capsys):
+    precious = make_precious_db(tmp_path)
+    assert cli("--mailboxes", "ring-a", "no-such-x", "beck-s") == 1
+    err = capsys.readouterr().err
+    assert "no-such-x" in err and "ring-a" not in err  # names only what is missing
+    assert_nothing_was_written(tmp_path, precious)  # ring-a was NOT ingested either
+
+
+def test_every_missing_mailbox_is_named(cli, tmp_path, capsys):
+    assert cli("--mailboxes", "ghost-1", "ring-a", "ghost-2") == 1
+    err = capsys.readouterr().err
+    assert "ghost-1" in err and "ghost-2" in err
+
+
+def test_the_default_mailboxes_are_checked_too(cli, tmp_path, capsys):
+    # With no --mailboxes the D-013 five are used. The fixture has only ring-a and beck-s.
+    precious = make_precious_db(tmp_path)
+    assert cli() == 1
+    err = capsys.readouterr().err
+    assert "ybarbo-p" in err and "presto-k" in err and "baughman-d" in err
+    assert_nothing_was_written(tmp_path, precious)
+
+
+def test_a_missing_maildir_leaves_the_previous_database_untouched(cli, tmp_path, capsys):
+    precious = make_precious_db(tmp_path)
+    assert cli("--mailboxes", "ring-a", maildir_path=tmp_path / "no-maildir") == 1
+    assert "no-maildir" in capsys.readouterr().err
+    assert_nothing_was_written(tmp_path, precious)
+
+
+def test_run_pipeline_itself_checks_before_it_wipes(settings, tmp_path):
+    # Not only main(): a caller of run_pipeline gets the same protection.
+    import dataclasses
+
+    precious = make_precious_db(tmp_path)
+    ghost = dataclasses.replace(settings, mailboxes=("no-such-x",))
+    with pytest.raises(FileNotFoundError, match="no-such-x"):
+        main_module.run_pipeline(ghost, body_parser=FakeBodyParser())
+    assert (tmp_path / "out" / "enron.db").read_bytes() == precious
+
+
+@pytest.mark.parametrize("name", ["../x", "a/b", "a\\b", ".", ".."])
+def test_a_mailbox_name_that_is_not_a_plain_folder_name_is_a_usage_error(cli, tmp_path, capsys, name):
+    with pytest.raises(SystemExit) as stopped:
+        cli("--mailboxes", name)
+    assert stopped.value.code == 2
+    assert "mailbox" in capsys.readouterr().err
+    assert_nothing_was_written(tmp_path)
+
+
+def test_an_empty_mailbox_name_is_a_usage_error(cli, tmp_path):
+    with pytest.raises(SystemExit) as stopped:
+        cli("--mailboxes", "")
+    assert stopped.value.code == 2
+
+
+def test_mailboxes_needs_at_least_one_name(cli, tmp_path, capsys):
+    with pytest.raises(SystemExit) as stopped:
+        cli("--mailboxes")
+    assert stopped.value.code == 2
+    assert_nothing_was_written(tmp_path)
+
+
+def test_repeated_mailbox_names_are_dropped_keeping_the_order():
+    settings = main_module.settings_from_args(["--mailboxes", "b-mail", "a-mail", "b-mail"])
+    assert settings.mailboxes == ("b-mail", "a-mail")
+
+
+@pytest.mark.parametrize("value", ["-1", "100.5", "abc", "nan", "inf", ""])
+def test_a_threshold_outside_0_to_100_is_a_usage_error(cli, tmp_path, capsys, value):
+    with pytest.raises(SystemExit) as stopped:
+        cli("--mailboxes", "ring-a", "--threshold", value)
+    assert stopped.value.code == 2
+    assert "threshold" in capsys.readouterr().err
+    assert_nothing_was_written(tmp_path)
+
+
+@pytest.mark.parametrize("value, expected", [("0", 0.0), ("100", 100.0), ("85.5", 85.5), ("90", 90.0)])
+def test_a_threshold_from_0_to_100_is_accepted(value, expected):
+    assert main_module.settings_from_args(["--threshold", value]).similarity_threshold == expected
+
+
+def test_the_threshold_reaches_dedup(cli, tmp_path, monkeypatch):
+    seen = []
+    real = dedup.flag_duplicates
+
+    def spy(conn, threshold=90.0, *args, **kwargs):
+        seen.append(threshold)
+        return real(conn, threshold, *args, **kwargs)
+
+    monkeypatch.setattr(dedup, "flag_duplicates", spy)
+    assert cli("--mailboxes", "ring-a", "--threshold", "77.5") == 0
+    assert cli("--mailboxes", "ring-a") == 0
+    assert seen == [77.5, 90.0]  # the flag, then the spec default
+
+
+@pytest.mark.parametrize("flag", ["--db-path", "--db"])
+def test_db_path_and_its_older_name_both_work(flag, tmp_path):
+    settings = main_module.settings_from_args([flag, str(tmp_path / "x.db")])
+    assert settings.db_path == tmp_path / "x.db"
+
+
+def test_db_path_is_used_for_the_database(cli, tmp_path):
+    assert cli("--mailboxes", "ring-a", "--db-path", str(tmp_path / "elsewhere.db")) == 0
+    assert count(tmp_path / "elsewhere.db", "emails") == 1
+    assert not (tmp_path / "out" / "enron.db").exists()
+
+
+def test_no_arguments_gives_exactly_the_config_defaults(monkeypatch):
+    monkeypatch.delenv("NOTIFY_TO", raising=False)
+    assert main_module.settings_from_args([]) == default_settings()
+
+
+def test_help_shows_the_defaults_from_config(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        main_module.settings_from_args(["--help"])
+    assert stopped.value.code == 0
+    # argparse may wrap a long help line at a hyphen, so compare with all whitespace removed.
+    out = "".join(capsys.readouterr().out.split())
+    defaults = default_settings()
+    for shown in (str(defaults.maildir), str(defaults.output_dir), "90", ", ".join(defaults.mailboxes), "NOTIFY_TO"):
+        assert "".join(shown.split()) in out
+    for flag in ("--maildir", "--mailboxes", "--output-dir", "--db-path", "--threshold",
+                 "--send-live", "--limit", "--notify-to"):
+        assert flag in out
+
+
+# --- --notify-to and NOTIFY_TO -----------------------------------------------------------------------
+
+
+def test_the_flag_wins_over_the_environment(monkeypatch):
+    monkeypatch.setenv("NOTIFY_TO", "env@gmail.com")
+    assert main_module.settings_from_args(["--notify-to", "flag@gmail.com"]).notify_to == "flag@gmail.com"
+
+
+def test_the_environment_is_the_fallback(monkeypatch):
+    monkeypatch.setenv("NOTIFY_TO", "env@gmail.com")
+    assert main_module.settings_from_args([]).notify_to == "env@gmail.com"
+
+
+def test_with_neither_there_is_no_recipient(monkeypatch):
+    monkeypatch.delenv("NOTIFY_TO", raising=False)
+    assert main_module.settings_from_args([]).notify_to is None
+
+
+def test_a_live_run_uses_the_notify_to_flag(dup_settings, monkeypatch, fake_mcp, capsys):
+    # fake_mcp also sets NOTIFY_TO in the environment; the flag must beat it.
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--notify-to", "flag@gmail.com") == 0
+    [sender] = fake_mcp.instances
+    assert sender.notify_to == "flag@gmail.com"
+    assert "flag@gmail.com" in capsys.readouterr().out  # the summary says where the mail went
+    assert {r["recipient"] for r in read_csv(dup_settings.output_dir / "send_log.csv")} == {"flag@gmail.com"}
+
+
+def test_a_live_run_works_with_the_flag_and_no_environment_variable(dup_settings, monkeypatch, fake_mcp):
+    monkeypatch.delenv("NOTIFY_TO", raising=False)
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--notify-to", "only-flag@gmail.com") == 0
+    assert fake_mcp.instances[0].notify_to == "only-flag@gmail.com"
+
+
+def test_live_mode_with_neither_fails_fast_naming_both_ways(dup_settings, monkeypatch, capsys):
+    monkeypatch.delenv("NOTIFY_TO", raising=False)
+    assert run_cli(dup_settings, monkeypatch, "--send-live") == 1
+    err = capsys.readouterr().err
+    assert "--notify-to" in err and "NOTIFY_TO" in err and "Traceback" not in err
+    assert not dup_settings.db_path.exists() and not dup_settings.output_dir.exists()
+
+
+def test_a_blank_flag_is_an_error_not_a_fallback_to_the_environment(dup_settings, monkeypatch, capsys):
+    # The real McpSender checks the address when it is built, before it connects to
+    # anything, so this starts no server. The environment variable is set and must be ignored.
+    monkeypatch.setenv("NOTIFY_TO", "env@gmail.com")
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--notify-to", "") == 1
+    err = capsys.readouterr().err
+    assert "--notify-to" in err and "Traceback" not in err
+    assert not dup_settings.db_path.exists() and not dup_settings.output_dir.exists()
+
+
+def test_a_dry_run_needs_no_recipient_at_all(dup_settings, monkeypatch):
+    monkeypatch.delenv("NOTIFY_TO", raising=False)
+    assert run_cli(dup_settings, monkeypatch) == 0
