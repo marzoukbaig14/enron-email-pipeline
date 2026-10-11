@@ -1,0 +1,182 @@
+{
+  "attachment_ref": [
+    "data/maildir/haedicke-m/sent_items/274.",
+    "data/maildir/brawner-s/sent_items/42.",
+    "data/maildir/schoolcraft-d/tw_fuel_sales/27.",
+    "data/maildir/stepenovitch-j/sent_items/83.",
+    "data/maildir/dean-c/sent_items/28."
+  ],
+  "bcc_equals_cc": [
+    "data/maildir/haedicke-m/southamerica/8.",
+    "data/maildir/brawner-s/sent_items/31.",
+    "data/maildir/schoolcraft-d/tw_fuel_sales/17.",
+    "data/maildir/stepenovitch-j/sent_items/41.",
+    "data/maildir/dean-c/sent_items/32."
+  ],
+  "blank_subject": [
+    "data/maildir/haedicke-m/sent_items/265.",
+    "data/maildir/brawner-s/discussion_threads/15.",
+    "data/maildir/schoolcraft-d/sent_items/95.",
+    "data/maildir/stepenovitch-j/sent_items/63.",
+    "data/maildir/dean-c/sent_items/35."
+  ],
+  "body_duplicate_cross_folder": [
+    "data/maildir/haedicke-m/accomplishments/1.",
+    "data/maildir/haedicke-m/sent/703.",
+    "data/maildir/haedicke-m/all_documents/832."
+  ],
+  "body_duplicate_cross_mailbox": [
+    "data/maildir/haedicke-m/sent/999.",
+    "data/maildir/haedicke-m/notes_inbox/8.",
+    "data/maildir/haedicke-m/all_documents/1370.",
+    "data/maildir/sanders-r/notes_inbox/67.",
+    "data/maildir/sanders-r/all_documents/2223."
+  ],
+  "calendar": [
+    "data/maildir/haedicke-m/calendar/15.",
+    "data/maildir/derrick-j/calendar/2.",
+    "data/maildir/pimenov-v/calendar/2.",
+    "data/maildir/schwieger-j/calendar/3.",
+    "data/maildir/platter-p/calendar/3."
+  ],
+  "folded_subject": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/inbox/3.",
+    "data/maildir/schoolcraft-d/sent_items/274.",
+    "data/maildir/stepenovitch-j/discussion_threads/71.",
+    "data/maildir/dean-c/discussion_threads/155."
+  ],
+  "folded_to_cc": [
+    "data/maildir/haedicke-m/southamerica/2.",
+    "data/maildir/brawner-s/sent_items/33.",
+    "data/maildir/schoolcraft-d/tw_fuel_sales/15.",
+    "data/maildir/stepenovitch-j/sent_items/49.",
+    "data/maildir/dean-c/discussion_threads/156."
+  ],
+  "heading_allcaps": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/to_do/1.",
+    "data/maildir/schoolcraft-d/cas/1.",
+    "data/maildir/stepenovitch-j/sent_items/52.",
+    "data/maildir/dean-c/sent_items/11."
+  ],
+  "heading_colon": [
+    "data/maildir/haedicke-m/chinesewallspolicy/1.",
+    "data/maildir/brawner-s/to_do/1.",
+    "data/maildir/schoolcraft-d/cas/1.",
+    "data/maildir/stepenovitch-j/sent_items/23.",
+    "data/maildir/dean-c/sent_items/15."
+  ],
+  "heading_underline": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/sent_items/6.",
+    "data/maildir/schoolcraft-d/sent_items/452.",
+    "data/maildir/stepenovitch-j/discussion_threads/11.",
+    "data/maildir/dean-c/discussion_threads/95."
+  ],
+  "large_to": [
+    "data/maildir/haedicke-m/newpowernoncompete/1.",
+    "data/maildir/brawner-s/inbox/3.",
+    "data/maildir/schoolcraft-d/inbox/73.",
+    "data/maildir/stepenovitch-j/discussion_threads/191.",
+    "data/maildir/dean-c/discussion_threads/45."
+  ],
+  "ldap_dn_recipient": [
+    "data/maildir/haedicke-m/sempre/1.",
+    "data/maildir/brawner-s/sent_items/95.",
+    "data/maildir/schoolcraft-d/tw_fuel_sales/15.",
+    "data/maildir/stepenovitch-j/sent_items/15.",
+    "data/maildir/dean-c/sent_items/3."
+  ],
+  "marker_forwarded": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/sent_items/8.",
+    "data/maildir/schoolcraft-d/sent_items/191.",
+    "data/maildir/stepenovitch-j/discussion_threads/15.",
+    "data/maildir/dean-c/discussion_threads/175."
+  ],
+  "marker_original_message": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/sent_items/3.",
+    "data/maildir/schoolcraft-d/cas/1.",
+    "data/maildir/stepenovitch-j/sent_items/15.",
+    "data/maildir/dean-c/sent_items/15."
+  ],
+  "missing_mandatory_header": [
+    "data/maildir/haedicke-m/eecc/1.",
+    "data/maildir/brawner-s/to_do/1.",
+    "data/maildir/schoolcraft-d/inbox/90.",
+    "data/maildir/stepenovitch-j/discussion_threads/78.",
+    "data/maildir/dean-c/discussion_threads/1."
+  ],
+  "missing_to": [
+    "data/maildir/haedicke-m/eecc/1.",
+    "data/maildir/brawner-s/to_do/1.",
+    "data/maildir/schoolcraft-d/inbox/90.",
+    "data/maildir/stepenovitch-j/discussion_threads/78.",
+    "data/maildir/dean-c/discussion_threads/1."
+  ],
+  "multi_original": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/sent_items/3.",
+    "data/maildir/schoolcraft-d/cas/1.",
+    "data/maildir/stepenovitch-j/sent_items/43.",
+    "data/maildir/dean-c/sent_items/28."
+  ],
+  "non_ascii": [
+    "data/maildir/haedicke-m/notes_inbox/344.",
+    "data/maildir/campbell-l/discussion_threads/889.",
+    "data/maildir/sanders-r/notes_inbox/312.",
+    "data/maildir/kean-s/california___working_group/163.",
+    "data/maildir/taylor-m/archive/8_00/32."
+  ],
+  "notes_forward": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/sent_items/8.",
+    "data/maildir/schoolcraft-d/sent_items/298.",
+    "data/maildir/stepenovitch-j/discussion_threads/15.",
+    "data/maildir/dean-c/discussion_threads/95."
+  ],
+  "notes_inline": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/sent_items/8.",
+    "data/maildir/schoolcraft-d/sent_items/289.",
+    "data/maildir/stepenovitch-j/discussion_threads/15.",
+    "data/maildir/dean-c/discussion_threads/173."
+  ],
+  "parse_defect": [
+    "data/maildir/haedicke-m/calendar/37.",
+    "data/maildir/schwieger-j/calendar/3.",
+    "data/maildir/campbell-l/inbox/1040.",
+    "data/maildir/zipper-a/calendar/23.",
+    "data/maildir/lokey-t/calendar/28."
+  ],
+  "placeholder_address": [
+    "data/maildir/haedicke-m/all_documents/28.",
+    "data/maildir/brawner-s/sent_items/7.",
+    "data/maildir/schoolcraft-d/inbox/junk/28.",
+    "data/maildir/stepenovitch-j/discussion_threads/19.",
+    "data/maildir/dean-c/discussion_threads/36."
+  ],
+  "quoted_gt": [
+    "data/maildir/haedicke-m/southamerica/2.",
+    "data/maildir/brawner-s/sent_items/8.",
+    "data/maildir/schoolcraft-d/sent_items/23.",
+    "data/maildir/stepenovitch-j/sent_items/83.",
+    "data/maildir/dean-c/sent_items/15."
+  ],
+  "quoted_printable": [
+    "data/maildir/haedicke-m/prc/1.",
+    "data/maildir/brawner-s/sent_items/21.",
+    "data/maildir/schoolcraft-d/sent_items/377.",
+    "data/maildir/stepenovitch-j/sent_items/64.",
+    "data/maildir/dean-c/discussion_threads/60."
+  ],
+  "xfolder_mismatch": [
+    "data/maildir/haedicke-m/inbox/ees_products/1.",
+    "data/maildir/brawner-s/_sent_mail/95.",
+    "data/maildir/schoolcraft-d/tw_fuel_sales/tw_bullets/tw_park___ride/1.",
+    "data/maildir/dean-c/_sent_mail/3.",
+    "data/maildir/linder-e/_sent_mail/3."
+  ]
+}
