@@ -1,11 +1,14 @@
 """Find storage copies and fuzzy duplicates, flag them in the DB, write the report.
 
-Behavior is fixed by D-021. Two stages:
+Behavior is fixed by D-021, with stage 1 extended by D-023. Two stages:
 
   Stage 1, mark_storage_copies: one email filed in several folders or mailboxes
   shows up as several rows with the same content. Those rows are ONE logical
-  email, not re-sends. They are grouped by a content hash; the row with the
-  smallest source_file is canonical and the others get copy_of.
+  email, not re-sends. They are grouped by a content hash (exact copies), and
+  exact-copy groups that are "timestamp-skewed" copies of each other are
+  merged (the same email exported twice, with the Date hour shifted). In each
+  group the row with the smallest source_file is canonical and the others get
+  copy_of.
 
   Stage 2, flag_duplicates: the spec's rule, on canonical rows only. Same
   from_address, same subject once Re:/Fwd: prefixes are stripped, and main
@@ -24,7 +27,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rapidfuzz import fuzz
@@ -46,6 +49,10 @@ REPORT_COLUMNS = (
 # body (the body parser strips control characters, D-020), so two different
 # field splits can never produce the same joined text.
 _HASH_SEPARATOR = "\x1f"
+
+# D-023: skewed copies differ by a whole number of hours, from 1 up to this many.
+_SKEW_MIN_GAP = timedelta(hours=1)
+_SKEW_MAX_GAP = timedelta(hours=12)
 
 # One or more leading "Re:", "Fw:" or "Fwd:" (any case, spaces allowed around
 # the colon). "Regarding X" is untouched: after "re" comes "g", not a colon.
@@ -125,10 +132,13 @@ def content_hash_for(email: EmailRecord) -> str:
 def mark_storage_copies(conn: sqlite3.Connection) -> StorageCopyStats:
     """Stage 1: compute every row's content_hash and mark the storage copies.
 
-    Rows sharing a hash are one logical email. The one with the smallest
-    source_file stays canonical (copy_of NULL); every other row gets copy_of =
-    the canonical row's message_id. Earlier marks are replaced, so a rerun
-    gives the same result.
+    Two kinds of copy end up in the same group:
+      - exact copies: same content_hash (D-021);
+      - skewed copies: same from_address, subject as written and main body,
+        and a date gap of a whole number of hours from 1 to 12 (D-023).
+    In each group the row with the smallest source_file stays canonical
+    (copy_of NULL); every other row gets copy_of = the canonical row's
+    message_id. Earlier marks are replaced, so a rerun gives the same result.
     """
     hashes: dict[str, str] = {}
     by_hash: dict[str, list[EmailRecord]] = defaultdict(list)
@@ -139,7 +149,7 @@ def mark_storage_copies(conn: sqlite3.Connection) -> StorageCopyStats:
 
     copy_of: dict[str, str] = {}
     groups = 0
-    for members in by_hash.values():
+    for members in _merge_skewed_copies(list(by_hash.values())):
         if len(members) < 2:
             continue
         groups += 1
@@ -266,6 +276,52 @@ def _flag_block(
             else:
                 remaining.append(candidate)
     return flags
+
+
+def _merge_skewed_copies(exact_groups: list[list[EmailRecord]]) -> list[list[EmailRecord]]:
+    """D-023: merge exact-copy groups that are timestamp-skewed copies of each other.
+
+    The same email exported twice can carry a Date whose hour is shifted (10
+    hours in most real cases), so its content_hash differs. Two groups are
+    skewed copies when their rows have the same from_address, the same subject
+    as written and the same main body (whitespace collapsed), and their dates
+    differ by a whole number of hours from 1 to 12. A whole number of hours
+    also means identical minutes and seconds. Gaps of 13 hours or more are not
+    merged, so daily mail at the same minute stays a series of re-sends.
+
+    Merging is anchored, with no chaining (the same idea as D-021 item 8):
+    within a block, the earliest group is an anchor and every other group
+    within the window of the ANCHOR joins it. A group 10 hours after a member
+    but 20 hours after the anchor does not.
+    """
+    # All rows of one exact-copy group share sender, subject, body and date, so
+    # the first row speaks for the whole group.
+    blocks: dict[tuple[str, str, str], list[list[EmailRecord]]] = defaultdict(list)
+    for group in exact_groups:
+        first = group[0]
+        blocks[(first.from_address, first.subject, _collapse(first.body))].append(group)
+
+    merged: list[list[EmailRecord]] = []
+    for block in blocks.values():
+        block.sort(key=lambda g: (g[0].date, min(e.source_file for e in g)))
+        waiting = block
+        while waiting:
+            anchor, *rest = waiting
+            members = list(anchor)
+            waiting = []  # groups that are not skewed copies of this anchor
+            for group in rest:
+                if _is_hour_skew(anchor[0].date, group[0].date):
+                    members.extend(group)
+                else:
+                    waiting.append(group)
+            merged.append(members)
+    return merged
+
+
+def _is_hour_skew(a: datetime, b: datetime) -> bool:
+    """Do two dates differ by a whole number of hours, 1 to 12 inclusive?"""
+    gap = abs(b - a)  # timedelta arithmetic is exact, so no floating-point doubt
+    return _SKEW_MIN_GAP <= gap <= _SKEW_MAX_GAP and gap % timedelta(hours=1) == timedelta(0)
 
 
 def _compared_texts(a: EmailRecord, b: EmailRecord) -> tuple[str, str]:

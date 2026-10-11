@@ -18,9 +18,11 @@ class Settings:
     db_path: Path = Path("output/enron.db")
     output_dir: Path = Path("output")
     error_log: Path = Path("error_log.txt")  # repo root: a spec deliverable
+    duplicates_report: Path = Path("duplicates_report.csv")  # repo root (D-021)
     mailboxes: tuple[str, ...] | None = MAILBOXES  # None would mean every mailbox
     similarity_threshold: float = 90.0
     send_live: bool = False
+    limit: int = 10  # most emails a live run may send (D-022 item 4)
 
 
 def default_settings() -> Settings:

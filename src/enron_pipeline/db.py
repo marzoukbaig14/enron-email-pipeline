@@ -224,8 +224,19 @@ def replace_duplicate_flags(
 
 
 def mark_notified(conn: sqlite3.Connection, message_id: str, when: datetime) -> None:
-    """Set notification_sent = 1 and notification_date on one email."""
-    raise NotImplementedError
+    """Set notification_sent = 1 and notification_date on one email.
+
+    Called after a successful live send (D-022 item 8), with `when` the send
+    time. Touches only those two columns. A message_id that is not in the
+    table raises ValueError instead of silently updating nothing, and a naive
+    datetime raises ValueError. Does not commit.
+    """
+    _update_each(
+        conn,
+        "UPDATE emails SET notification_sent = 1, notification_date = ?"
+        " WHERE message_id = ?",
+        [(_iso(when), message_id)],
+    )
 
 
 def _record_from_row(row: dict) -> EmailRecord:

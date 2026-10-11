@@ -1,4 +1,4 @@
-"""Tests for dedup.py (behavior fixed in D-021).
+"""Tests for dedup.py (behavior fixed in D-021, stage 1 extended by D-023).
 
 Every test runs on an in-memory database seeded with hand-built EmailRecords.
 
@@ -6,6 +6,10 @@ Two stages, tested separately and together:
 - Stage 1 (mark_storage_copies): the same email filed in several folders or
   mailboxes is ONE logical email. Rows with the same content_hash are grouped;
   the row with the smallest source_file is canonical, the rest get copy_of.
+  D-023 adds "timestamp-skewed" copies: the same email exported twice with the
+  Date hour shifted (usually 10 hours), so the hash differs. Rows with the same
+  sender, subject as written and main body, a date gap of a whole number of
+  hours from 1 to 12, join the same group.
 - Stage 2 (flag_duplicates): on canonical rows only, the spec's rule: same
   from_address, same normalized subject, main bodies >= 90% similar. The
   earliest is the original and later ones are flagged against it. A flagged
@@ -280,6 +284,264 @@ def test_mark_storage_copies_fills_content_hash_on_every_row(conn):
 def test_mark_storage_copies_with_no_emails(conn):
     result = dedup.mark_storage_copies(conn)
     assert (result.groups, result.rows) == (0, 0)
+
+
+# --- Stage 1, D-023: timestamp-skewed storage copies ---------------------------------------
+
+
+def skew_pair(conn, hours=10.0, **second):
+    """Seed an email at T0 and a copy `hours` later (in another folder), then run stage 1."""
+    second_fields = dict(date=T0 + timedelta(hours=hours), source_file="maildir/allen-p/sent_items/1.")
+    second_fields.update(second)  # a test may override the date or the source_file too
+    seed(conn, email(1, date=T0, source_file="maildir/allen-p/_sent_mail/1."), email(2, **second_fields))
+    return dedup.mark_storage_copies(conn)
+
+
+def test_a_ten_hour_gap_is_collapsed(conn):
+    result = skew_pair(conn, 10)
+    assert (result.groups, result.rows) == (1, 1)
+    assert row(conn, "<1@thyme>")["copy_of"] is None
+    assert row(conn, "<2@thyme>")["copy_of"] == "<1@thyme>"
+
+
+@pytest.mark.parametrize("hours", range(1, 13))
+def test_every_whole_hour_gap_from_1_to_12_is_collapsed(conn, hours):
+    assert skew_pair(conn, hours).rows == 1
+
+
+@pytest.mark.parametrize("hours", [13, 14, 23, 24, 25, 48, 72, 168])
+def test_gaps_of_13_hours_or_more_are_not_collapsed(conn, hours):
+    # 24 and its multiples are daily automated mail at the same minute.
+    assert skew_pair(conn, hours).rows == 0
+    assert row(conn, "<2@thyme>")["copy_of"] is None
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        timedelta(hours=10, minutes=1),
+        timedelta(hours=10, seconds=1),
+        timedelta(hours=9, minutes=59, seconds=59),
+        timedelta(hours=10, minutes=30),
+        timedelta(minutes=30),
+        timedelta(hours=12, seconds=1),
+        timedelta(seconds=1),
+    ],
+)
+def test_a_gap_that_is_not_a_whole_number_of_hours_is_not_collapsed(conn, gap):
+    seed(conn, email(1, date=T0), email(2, date=T0 + gap))
+    assert dedup.mark_storage_copies(conn).rows == 0
+
+
+def test_a_gap_of_zero_is_not_the_skew_rule(conn):
+    # Same date but a different quoted chain is not an exact copy (D-021) and
+    # not a skewed copy either (the rule needs 1 to 12 hours). Stage 2 decides.
+    seed(conn, email(1, date=T0), email(2, date=T0, quoted_content="> different"))
+    assert dedup.mark_storage_copies(conn).rows == 0
+
+
+def test_the_later_row_can_come_first_in_the_database(conn):
+    seed(
+        conn,
+        email(1, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/sent_items/1."),
+        email(2, date=T0, source_file="maildir/allen-p/_sent_mail/1."),
+    )
+    assert dedup.mark_storage_copies(conn).rows == 1
+
+
+def test_a_different_main_body_is_not_collapsed(conn):
+    assert skew_pair(conn, 10, body=BODY + "!").rows == 0
+
+
+def test_a_difference_in_whitespace_only_is_still_the_same_main_body(conn):
+    assert skew_pair(conn, 10, body="Hello  team,\nthe Q2 numbers\n\nare ready for review on Friday.\n").rows == 1
+
+
+def test_different_quoted_or_forwarded_text_is_still_collapsed(conn):
+    # The real case: the second export formats the quoted header differently.
+    assert skew_pair(conn, 10, quoted_content="> From:\tTim Belden\n> Sent: Monday").rows == 1
+
+
+def test_forwarded_content_may_differ_too(conn):
+    assert skew_pair(conn, 10, forwarded_content="---- Forwarded by X ----").rows == 1
+
+
+def test_a_different_sender_is_not_collapsed(conn):
+    assert skew_pair(conn, 10, from_address="tim@enron.com").rows == 0
+
+
+def test_a_different_subject_as_written_is_not_collapsed(conn):
+    # "Re: X" and "X" are different subjects here, unlike in stage 2.
+    assert skew_pair(conn, 10, subject="Re: Q2 numbers").rows == 0
+
+
+def test_the_same_subject_in_a_different_case_is_not_collapsed(conn):
+    assert skew_pair(conn, 10, subject="Q2 NUMBERS").rows == 0
+
+
+def test_a_skewed_copy_in_another_mailbox_is_collapsed(conn):
+    result = skew_pair(conn, 10, mailbox="beck-s", source_file="maildir/beck-s/inbox/1.")
+    assert result.rows == 1
+
+
+def test_gap_is_measured_between_instants_not_between_header_text(conn):
+    plus_two = timezone(timedelta(hours=2))
+    # The same instant as T0 + 10h, written with a +02:00 offset.
+    assert skew_pair(conn, 10, date=(T0 + timedelta(hours=10)).astimezone(plus_two)).rows == 1
+
+
+def test_canonical_is_the_smallest_source_file_even_if_it_is_the_later_copy(conn):
+    seed(
+        conn,
+        email(1, date=T0, source_file="maildir/allen-p/sent_items/1."),
+        email(2, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/_sent_mail/1."),
+    )
+    dedup.mark_storage_copies(conn)
+    assert row(conn, "<2@thyme>")["copy_of"] is None  # "_sent_mail" sorts before "sent_items"
+    assert row(conn, "<1@thyme>")["copy_of"] == "<2@thyme>"
+
+
+def test_skewed_copies_keep_their_own_content_hash(conn):
+    skew_pair(conn, 10)
+    assert row(conn, "<1@thyme>")["content_hash"] != row(conn, "<2@thyme>")["content_hash"]
+    assert row(conn, "<2@thyme>")["content_hash"] == dedup.content_hash_for(
+        email(2, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/sent_items/1.")
+    )
+
+
+def test_exact_copies_and_skewed_copies_join_one_group(conn):
+    # The email is filed in two folders, and the other export has it in two more.
+    seed(
+        conn,
+        email(1, date=T0, source_file="maildir/allen-p/_sent_mail/1."),
+        email(2, date=T0, source_file="maildir/allen-p/sent/1."),
+        email(3, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/sent_items/1."),
+        email(4, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/sent_items/2."),
+    )
+    result = dedup.mark_storage_copies(conn)
+    assert (result.groups, result.rows) == (1, 3)
+    assert [row(conn, f"<{n}@thyme>")["copy_of"] for n in (1, 2, 3, 4)] == [
+        None, "<1@thyme>", "<1@thyme>", "<1@thyme>",
+    ]
+
+
+def test_three_skewed_copies_within_12_hours_of_the_earliest_are_one_group(conn):
+    seed(
+        conn,
+        email(1, date=T0, source_file="maildir/allen-p/a/1."),
+        email(2, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/b/1."),
+        email(3, date=T0 + timedelta(hours=11), source_file="maildir/allen-p/c/1."),
+    )
+    result = dedup.mark_storage_copies(conn)
+    assert (result.groups, result.rows) == (1, 2)
+
+
+def test_gaps_do_not_chain_through_an_intermediate_copy(conn):
+    # 0h, 10h, 20h: the 20h row is 10h from the middle one but 20h from the
+    # earliest, so it is NOT pulled into the group (same no-chaining idea as
+    # D-021 item 8). It starts its own group, and stage 2 handles it.
+    seed(
+        conn,
+        email(1, date=T0, source_file="maildir/allen-p/a/1."),
+        email(2, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/b/1."),
+        email(3, date=T0 + timedelta(hours=20), source_file="maildir/allen-p/c/1."),
+    )
+    result = dedup.mark_storage_copies(conn)
+    assert (result.groups, result.rows) == (1, 1)
+    assert row(conn, "<3@thyme>")["copy_of"] is None
+
+
+def test_two_empty_main_bodies_count_as_identical_for_the_skew_rule(conn):
+    # D-023 says "identical main body", and two empty ones are identical. On the
+    # real data every such pair also had a near-identical full text (checked),
+    # so nothing unrelated was collapsed.
+    seed(
+        conn,
+        email(1, date=T0, body="", forwarded_content="fwd one", source_file="maildir/allen-p/a/1."),
+        email(2, date=T0 + timedelta(hours=10), body="", forwarded_content="fwd one", source_file="maildir/allen-p/b/1."),
+    )
+    assert dedup.mark_storage_copies(conn).rows == 1
+
+
+def test_stats_count_skewed_groups_with_the_exact_ones(conn):
+    seed(
+        conn,
+        # exact copies: 1 group, 1 row
+        email(1, subject="A", date=T0, source_file="maildir/allen-p/a/1."),
+        email(2, subject="A", date=T0, source_file="maildir/allen-p/b/1."),
+        # skewed copies: 1 group, 2 rows
+        email(3, subject="B", date=T0, source_file="maildir/allen-p/a/2."),
+        email(4, subject="B", date=T0 + timedelta(hours=10), source_file="maildir/allen-p/b/2."),
+        email(5, subject="B", date=T0 + timedelta(hours=11), source_file="maildir/allen-p/c/2."),
+    )
+    result = dedup.mark_storage_copies(conn)
+    assert (result.groups, result.rows) == (2, 3)
+
+
+def test_running_stage_1_twice_with_skewed_copies_gives_the_same_result(conn):
+    seed(
+        conn,
+        email(1, date=T0, source_file="maildir/allen-p/a/1."),
+        email(2, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/b/1."),
+        email(3, date=T0 + timedelta(days=3), source_file="maildir/allen-p/a/2."),
+    )
+    first = dedup.mark_storage_copies(conn)
+    state = snapshot(conn)
+    assert dedup.mark_storage_copies(conn) == first
+    assert snapshot(conn) == state
+
+
+# --- Skewed copies and stage 2 together (D-023) ------------------------------------------------
+
+
+def test_skewed_copies_are_not_flagged_as_resends(conn):
+    seed(
+        conn,
+        email(1, date=T0, source_file="maildir/allen-p/_sent_mail/1."),
+        email(2, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/sent_items/1."),
+    )
+    assert run_both(conn) == []
+    assert row(conn, "<2@thyme>")["is_duplicate"] == 0
+    assert row(conn, "<2@thyme>")["copy_of"] == "<1@thyme>"
+
+
+def test_a_13_hour_gap_is_still_flagged_as_a_resend(conn):
+    seed(conn, email(1, date=T0), email(2, date=T0 + timedelta(hours=13)))
+    assert flagged_ids(run_both(conn)) == {"<2@thyme>"}
+
+
+def test_daily_mail_at_the_same_minute_is_still_flagged_as_resends(conn):
+    seed(conn, *(email(n, date=T0 + timedelta(days=n), subject="Daily report") for n in range(1, 6)))
+    flags = run_both(conn)
+    assert len(flags) == 4
+    assert {f.original_message_id for f in flags} == {"<1@thyme>"}
+
+
+def test_daily_mail_where_every_day_has_a_skewed_copy(conn):
+    rows = []
+    for day in range(1, 4):
+        rows.append(email(day * 10, date=T0 + timedelta(days=day), subject="Daily", source_file=f"maildir/allen-p/_sent_mail/{day}."))
+        rows.append(email(day * 10 + 1, date=T0 + timedelta(days=day, hours=10), subject="Daily", source_file=f"maildir/allen-p/sent_items/{day}."))
+    seed(conn, *rows)
+    storage = dedup.mark_storage_copies(conn)
+    flags = dedup.flag_duplicates(conn)
+    assert (storage.groups, storage.rows) == (3, 3)  # one skewed pair per day
+    # Days 2 and 3 are re-sends of day 1; no skewed copy is flagged.
+    assert flagged_ids(flags) == {"<20@thyme>", "<30@thyme>"}
+    assert {f.original_message_id for f in flags} == {"<10@thyme>"}
+
+
+def test_a_resend_and_its_skewed_copy_are_one_flag_against_the_canonical_original(conn):
+    seed(
+        conn,
+        email(1, date=T0, source_file="maildir/allen-p/_sent_mail/1."),
+        email(2, date=T0 + timedelta(hours=10), source_file="maildir/allen-p/sent_items/1."),
+        email(3, date=T0 + timedelta(days=7), source_file="maildir/allen-p/_sent_mail/2."),
+        email(4, date=T0 + timedelta(days=7, hours=10), source_file="maildir/allen-p/sent_items/2."),
+    )
+    flags = run_both(conn)
+    assert [(f.duplicate_message_id, f.original_message_id) for f in flags] == [("<3@thyme>", "<1@thyme>")]
+    assert row(conn, "<4@thyme>")["is_duplicate"] == 0
 
 
 # --- Stage 2: the spec rule ------------------------------------------------------------

@@ -400,3 +400,57 @@ def test_the_same_file_can_fail_more_than_once(conn):
     db.insert_parse_failure(conn, failure)
     db.insert_parse_failure(conn, failure)
     assert count(conn, "parse_failures") == 2
+
+
+# --- mark_notified (D-022 item 8) -----------------------------------------------------
+
+
+def test_mark_notified_sets_the_flag_and_the_send_time(conn):
+    db.insert_email(conn, make_record())
+    when = datetime(2026, 10, 11, 18, 30, 5, tzinfo=timezone.utc)
+
+    db.mark_notified(conn, "<1@thyme>", when)
+
+    assert conn.execute(
+        "SELECT notification_sent, notification_date FROM emails"
+    ).fetchall() == [(1, "2026-10-11T18:30:05Z")]
+
+
+def test_mark_notified_changes_only_the_named_email(conn):
+    db.insert_email(conn, make_record())
+    db.insert_email(
+        conn, make_record(message_id="<2@thyme>", source_file="maildir/allen-p/inbox/2.")
+    )
+    db.mark_notified(conn, "<2@thyme>", SENT)
+    assert conn.execute(
+        "SELECT message_id, notification_sent, notification_date FROM emails ORDER BY id"
+    ).fetchall() == [("<1@thyme>", 0, None), ("<2@thyme>", 1, "2001-05-14T23:39:00Z")]
+
+
+def test_mark_notified_converts_to_utc(conn):
+    db.insert_email(conn, make_record())
+    pacific = timezone(timedelta(hours=-7))
+    db.mark_notified(conn, "<1@thyme>", datetime(2026, 10, 11, 11, 30, tzinfo=pacific))
+    assert conn.execute("SELECT notification_date FROM emails").fetchone()[0] == (
+        "2026-10-11T18:30:00Z"
+    )
+
+
+def test_mark_notified_for_an_unknown_message_raises(conn):
+    with pytest.raises(ValueError, match="nobody"):
+        db.mark_notified(conn, "<nobody@thyme>", SENT)
+
+
+def test_mark_notified_rejects_a_naive_datetime(conn):
+    db.insert_email(conn, make_record())
+    with pytest.raises(ValueError):
+        db.mark_notified(conn, "<1@thyme>", datetime(2026, 10, 11, 18, 30))
+    assert conn.execute("SELECT notification_sent FROM emails").fetchone()[0] == 0
+
+
+def test_mark_notified_does_not_commit_inside_a_caller_transaction(conn):
+    db.insert_email(conn, make_record())
+    conn.execute("BEGIN")
+    db.mark_notified(conn, "<1@thyme>", SENT)
+    conn.rollback()
+    assert conn.execute("SELECT notification_sent FROM emails").fetchone()[0] == 0

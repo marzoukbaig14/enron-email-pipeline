@@ -128,6 +128,8 @@ Transactions: `connect` sets `isolation_level=None`, so only the SQL written out
 
 *Added for dedup (D-021 item 13: dedup reads and writes only through db functions).* `load_emails` reads rows back as `EmailRecord` in id order (`canonical_only=True` skips rows with `copy_of` set; `recipients` is not loaded). `replace_storage_copies` and `replace_duplicate_flags` write dedup's two stages. "Replace" means each first clears what an earlier run left, so rerunning dedup, or running it at another threshold, leaves nothing stale. They touch only their own columns (never `notification_*`), raise `ValueError` for a `message_id` that is not in the table instead of silently updating nothing, run inside a savepoint like `insert_email`, and do not commit.
 
+`mark_notified` (D-022 item 8) sets `notification_sent = 1` and `notification_date` (ISO 8601 UTC text) on one email, and nothing else. An unknown `message_id` or a naive datetime raises `ValueError`. It does not commit.
+
 Must NOT: parse, find duplicates, send, or import dedup/notify.
 
 ### ingest.py
@@ -197,7 +199,7 @@ DedupStats(storage_copy_groups, storage_copy_rows, duplicate_groups, emails_flag
 
 `flag_duplicates` groups on `from_address` plus the normalized subject, compares bodies, treats the earliest as the original, and sets `is_duplicate`, `duplicate_of` and `similarity_score` on every later one. It returns the flags it set. The similarity function is a parameter, so swapping the metric touches nothing else.
 
-Behavior is fixed by D-021: stage 1 collapses storage copies, stage 2 runs the spec rule on canonical rows only, with no chaining.
+Behavior is fixed by D-021, with stage 1 extended by D-023: stage 1 collapses storage copies (exact copies by content hash, plus timestamp-skewed copies: same sender, subject as written and main body, date gap a whole number of hours from 1 to 12, merged without chaining), and stage 2 runs the spec rule on canonical rows only, with no chaining.
 
 Inputs: a DB connection and the threshold. Dedup reads and writes through the `db` functions above and runs no SQL of its own.
 Must NOT: import ingest or notify, send anything, set `notification_*`.
@@ -219,7 +221,13 @@ class OutgoingEmail:
 class Sender(Protocol):
     def send(self, message: OutgoingEmail) -> SendResult: ...
 
+class DryRunSender:                  # D-022 item 1
+    def __init__(self, output_dir: Path) -> None
+class McpSender:                     # D-022 item 3; the MCP call itself is still a stub
+    def __init__(self, notify_to: str | None) -> None
+
 def render_notification(flag: DuplicateFlag, now: datetime) -> OutgoingEmail
+def select_live_flags(flags: Sequence[DuplicateFlag], limit: int) -> list[DuplicateFlag]
 def send_notifications(
     flags: Sequence[DuplicateFlag],
     sender: Sender,
@@ -228,7 +236,16 @@ def send_notifications(
 def write_send_log(results: Sequence[SendResult], path: Path) -> None   # send_log.csv
 ```
 
-`send_notifications` catches exceptions per message and records them as `status=SendStatus.FAILED`. It never raises. `now` can be injected for tests.
+Behavior is fixed by D-022.
+
+- `render_notification` fills the spec's section 4.2 template. `OutgoingEmail.to` is the sender of the flagged duplicate (the template's To line). The subject is `"[Duplicate Notice] Re: " + flag.subject` with newlines removed, and `references` is the flagged message id. The body is the 13 template lines separated by one blank line each, as the spec shows them. Dates in the body are ISO 8601 UTC (`2001-05-14T23:39:00Z`), and the score has two decimals and a `%`. `DuplicateFlag` carries one subject, the flagged email's, so it fills both the Subject header and the body's `Subject:` line.
+- `select_live_flags` returns the latest duplicate (by `duplicate_date`, ties by message id) of each group (flags sharing `original_message_id`). Groups come in `duplicates_report.csv` order and the first `limit` are kept. A negative limit raises `ValueError`.
+- `send_notifications` catches exceptions while rendering or sending, per message, and records them as `status=SendStatus.FAILED` with `"<ExceptionType>: <message>"`. It never raises. Without `now`, each message is stamped with the current UTC time in whole seconds.
+- `write_send_log` writes `timestamp, recipient, subject, status, error`, one row per attempt (dry run or live), rewriting the file each run.
+- `DryRunSender` creates its folder and deletes earlier drafts (only files named `<digits>_*.eml`), then writes `<n>_<sanitized message id>.eml` per message, n from 1, zero-padded to 4 digits. Each draft is a plain-text RFC 822 message with To, Subject, Date and References headers. Its results have status `DRY_RUN`, the Enron sender as `recipient`, and the message's Date as `timestamp`.
+- `McpSender(notify_to)` raises `ValueError` mentioning `NOTIFY_TO` if the address is missing or has no `@`: that is how live mode refuses to start. Every live email is delivered to `notify_to`, while the message keeps the Enron sender in `to`. `send` raises `NotImplementedError("configure MCP first")` until the MCP connection is built, so every live send is currently logged as failed.
+
+*Added by D-022: `DryRunSender` and `McpSender` were skeletons with no constructor arguments (McpSender) and a stub `send` (DryRunSender). `select_live_flags` is new. `send_notifications` also catches rendering errors, not only send errors.*
 
 Inputs: `DuplicateFlag` list and a `Sender`. It never gets a DB connection or settings.
 Must NOT: touch the DB, import dedup, decide dry-run vs live (the caller passes the sender), hold credentials.
@@ -243,13 +260,17 @@ class Settings:
     db_path: Path = Path("output/enron.db")
     output_dir: Path = Path("output")
     error_log: Path = Path("error_log.txt")        # repo root: a spec deliverable
+    duplicates_report: Path = Path("duplicates_report.csv")   # repo root (D-021 item 11)
     mailboxes: tuple[str, ...] | None = MAILBOXES  # D-013; None would mean every mailbox
     similarity_threshold: float = 90.0
     send_live: bool = False
+    limit: int = 10                                # most emails a live run may send (D-022 item 4)
 
 MAILBOXES = ("ring-a", "ybarbo-p", "presto-k", "baughman-d", "beck-s")   # D-013, Set 1
 def default_settings() -> Settings
 ```
+
+`NOTIFY_TO` is not a setting: it is an address read from the environment by `main.py` only, so `Settings` stays free of anything private.
 
 Only `main.py` imports it. It reads values and passes them down as plain arguments. The other modules keep their own defaults so they work in isolation.
 
@@ -260,20 +281,22 @@ Must NOT: import any package module, do I/O, hold secrets.
 
 ```
 python main.py [--maildir PATH] [--db PATH] [--output-dir PATH]
-               [--mailboxes A B ...] [--threshold 90] [--send-live]
+               [--mailboxes A B ...] [--threshold 90] [--send-live] [--limit N]
 ```
 
 ```python
 def settings_from_args(argv: Sequence[str] | None = None) -> Settings
-def run_pipeline(settings: Settings, body_parser=parse_body) -> ExtractionStats
+def run_notifications(conn, flags, sender, *, live: bool, limit: int, send_log: Path) -> list[SendResult]
+def run_pipeline(settings: Settings, body_parser=parse_body, sender: Sender | None = None) -> ExtractionStats
 def main(argv: Sequence[str] | None = None) -> int
 ```
 
-- `settings_from_args` starts from `default_settings()` and applies the flags. `--output-dir` also moves the database to `<output-dir>/enron.db` unless `--db` is given. The error log stays at `Settings.error_log` (repo root) whatever `--output-dir` says. `--mailboxes` replaces the D-013 list.
-- `run_pipeline` is the pipeline sequence, kept apart from argument parsing so tests can call it with a `Settings` and a fake `body_parser`. It creates the output folder, rebuilds the database (`db.init_schema`), runs `ingest.ingest_mailboxes` with `body_parser` (default: the real `parse_body`), writes `output/extraction_stats.json` and prints `format_stats`. It raises `FileNotFoundError` for a missing maildir or mailbox.
-- `main` turns that `FileNotFoundError` into a one-line `error: ...` on stderr and exit code 1; success returns 0.
+- `settings_from_args` starts from `default_settings()` and applies the flags. `--output-dir` also moves the database to `<output-dir>/enron.db` unless `--db` is given. The error log and `duplicates_report.csv` stay at the repo root (`Settings.error_log`, `Settings.duplicates_report`) whatever `--output-dir` says. `--mailboxes` replaces the D-013 list. `--limit N` (default 10, must not be negative) caps live sends only.
+- `run_notifications` is the notify stage, kept in `main.py` because it ties `notify` to the database and `notify` never touches the DB. Dry run: every flag gets a draft. Live: `notify.select_live_flags(flags, limit)` first. Either way it calls `notify.send_notifications`, writes `send_log.csv`, and calls `db.mark_notified` for each result with status `SENT` (D-022 items 7 to 9). Dry runs and failures never mark anything.
+- `run_pipeline` is the pipeline sequence, kept apart from argument parsing so tests can call it with a `Settings`, a fake `body_parser` and a fake `sender`. It creates the output folder and rebuilds the database (`db.init_schema`). Then ingest (writes `extraction_stats.json`, prints `format_stats`), dedup (`mark_storage_copies`, `flag_duplicates` with `settings.similarity_threshold`, `summarize`, `write_report`, `output/dedup_stats.json`, prints the stats), and notify (`DryRunSender(output/replies)` unless live, then `run_notifications`, then a one-line summary). It raises `FileNotFoundError` for a missing maildir or mailbox, and `ValueError` if `send_live` is set with no `sender`.
+- `main` reads `NOTIFY_TO` from the environment, only in live mode, and builds `notify.McpSender` **before any work starts**, so a missing or unusable address stops the run with `error: NOTIFY_TO ...` on stderr and exit code 1, with nothing ingested or written. It also turns `FileNotFoundError` into a one-line `error: ...` and exit code 1. Success returns 0, including a live run in which some sends failed (they are in `send_log.csv` and the console summary).
 
-Wired so far: init db and ingest. Dedup and notify are marked `TODO` in `run_pipeline` and print a "not implemented yet" line. `--send-live` is accepted and prints a note that it has no effect yet. Planned, once those modules exist: dedup -> notify with `DryRunSender`, or the live sender when `--send-live` is set -> write outputs, wiring results between modules, for example `SendResult` -> `db.mark_notified`. Without `--send-live` nothing is ever sent.
+Without `--send-live` nothing is ever sent. The live sender is a stub until the MCP server is configured.
 
 Must NOT: contain parsing, SQL, or notification-rendering logic.
 
@@ -342,7 +365,7 @@ class Sender(Protocol):
 | Implementation | Behavior |
 |---|---|
 | `DryRunSender(output_dir: Path)` | Writes one `.eml` per message into `output_dir` (`output/replies/`). Returns `status=SendStatus.DRY_RUN`. Sends nothing. |
-| `McpSender(...)` | Sends via the Gmail MCP server's `send_email` tool. Returns `SendStatus.SENT` or `SendStatus.FAILED` with the error text. **Skeleton only.** How it reaches MCP is decided at the notifier (D-014 item 6). |
+| `McpSender(notify_to: str)` | Sends via the Gmail MCP server's `send_email` tool to `notify_to` (the `NOTIFY_TO` address; D-022 item 3), while the message keeps the Enron sender in its To line. Returns `SendStatus.SENT` with `recipient=notify_to`, or `SendStatus.FAILED` with the error text. **Stub:** `send` raises `NotImplementedError("configure MCP first")`. How it reaches MCP is decided at the notifier (D-014 item 6). |
 
 Both implementations live in `notify.py` for now. If the live sender grows, splitting it into its own module would be a structural change, so I would ask first.
 
@@ -365,8 +388,8 @@ data/maildir/<mailbox>/<folder>/<file>
         |
    dedup.mark_storage_copies / flag_duplicates   (reads and updates emails via the connection)
         |                                -> list[DuplicateFlag]
-   notify.send_notifications(flags, sender) -> list[SendResult]
-        |
+   main.run_notifications: notify.select_live_flags (live only) -> notify.send_notifications(flags, sender) -> list[SendResult]
+        |                                -> output/send_log.csv
    db.mark_notified (live SendStatus.SENT results only)
 ```
 
@@ -381,7 +404,7 @@ data/maildir/<mailbox>/<folder>/<file>
 | `duplicates_report.csv` | `dedup.write_report` |
 | Duplicate stats (groups, flagged, average group size) | `dedup.summarize`, printed by `main.py` |
 | `output/replies/*.eml` | `notify.DryRunSender` |
-| `output/send_log.csv` | `notify.write_send_log` (live sends) |
+| `output/send_log.csv` | `notify.write_send_log` (every attempt, dry run and live; rewritten each run) |
 | `schema.sql` | exists already, loaded by `db.init_schema` |
 
 Not module output, handled separately later: `sample_queries.sql`, `mcp_config.json.example`, README, AI_USAGE.md, requirements.txt.
@@ -413,5 +436,5 @@ Not module output, handled separately later: `sample_queries.sql`, `mcp_config.j
 2. **Parsers raise `ParseError` for bad input** instead of returning a result object. ingest converts it to a `ParseFailure` and adds the timestamp.
 3. **`EmailRecord` carries the DB-managed columns** (with defaults) so it is literally 1:1 with `emails`.
 4. **`content_hash` input** was not defined in D-012. Resolved by D-021: SHA-256 of from_address, date (UTC ISO), subject as written, body, quoted_content and forwarded_content, computed by dedup (`content_hash_for`). A flagged row's storage copies are not flagged; they stay reachable through `copy_of`.
-5. **Who gets a notification.** The spec says one email per duplicate group to the sender of the latest duplicate, but also wants drafts for all flagged duplicates. The signatures above work either way, because `send_notifications` sends whatever flags it is given. Which flags `main.py` passes is for you to decide before the notifier is built.
+5. **Who gets a notification.** The spec says one email per duplicate group to the sender of the latest duplicate, but also wants drafts for all flagged duplicates. The signatures above work either way, because `send_notifications` sends whatever flags it is given. Which flags `main.py` passes is for you to decide before the notifier is built. **Resolved by D-022:** a dry run passes every flag (one draft each); a live run passes only the latest duplicate of each group, capped by `--limit`.
 6. **Similarity scale.** I used 0-100 with a default threshold of 90.0, to match the spec's percentage wording and the `schema.sql` REAL column.

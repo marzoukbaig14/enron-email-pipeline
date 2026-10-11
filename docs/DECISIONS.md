@@ -382,3 +382,49 @@ Consequences: Folder and cross-mailbox copies never trigger
 notifications. Only re-sends by the same sender with the same subject
 are flagged. No chaining, so every reported score is against the
 original and at least 90.
+
+## D-022: Notification behavior
+Date: 2026-10-11
+Status: Accepted
+Decision:
+1. Dry run (default): one .eml draft per flagged duplicate in
+   output/replies/, named <n>_<sanitized message id>.eml. Every draft
+   follows the spec template exactly, To: the sender of that duplicate.
+2. Live (--send-live): one email per duplicate group, for the latest
+   duplicate in the group, per spec 4.2.
+3. Enron addresses are dead. In live mode the actual recipient is the
+   NOTIFY_TO environment variable (my Gmail). The template's To line
+   keeps the real Enron sender. If NOTIFY_TO is unset, live mode
+   refuses to start.
+4. Live sends are capped by --limit (default 10) so a run can't spam
+   493 emails or hit Gmail limits.
+5. Subject: "[Duplicate Notice] Re: <original subject>". References
+   header: the flagged message id. Date: send time. Similarity shown
+   with 2 decimals and a % sign.
+6. notify receives a sender object. Two implementations: a dry-run
+   sender that writes .eml files, and a live MCP sender (built later).
+   The sender interface is a typing.Protocol.
+7. Every attempt (dry run and live) is logged to output/send_log.csv:
+   timestamp, recipient, subject, status, error.
+8. After a successful live send, notification_sent = 1 and
+   notification_date = send time on that row. Dry runs don't set them.
+9. A failed send is logged with status failed and the error, and the
+   run continues.
+
+## D-023: Timestamp-skewed storage copies
+Date: 2026-10-11
+Status: Accepted
+Context: 293 flagged emails in the real run were the same email in two
+exports, with the Date hour shifted (242 by exactly 10 hours) and
+slightly different quoted headers. Stage 1's hash includes date and
+quoted text, so they were not collapsed and stage 2 flagged them as
+re-sends.
+Decision: Stage 1 also collapses rows with the same from_address, same
+subject as written, identical main body (whitespace collapsed), and a
+date gap that is a whole number of hours from 1 to 12 inclusive with
+identical minutes and seconds. The canonical row is the smallest
+source_file, as in D-021. Gaps of 13+ hours are not collapsed, so
+daily automated mail at the same minute is still treated as re-sends.
+Consequences: Skewed copies no longer get notices. A true re-send
+exactly 1 to 12 hours later to the minute, with an identical body,
+would be missed. That case is rare and accepted.

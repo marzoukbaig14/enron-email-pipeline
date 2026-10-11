@@ -24,12 +24,19 @@ def test_default_paths():
     assert settings.db_path == Path("output/enron.db")
     assert settings.output_dir == Path("output")
     assert settings.error_log == Path("error_log.txt")  # repo root, a spec deliverable
+    assert settings.duplicates_report == Path("duplicates_report.csv")  # repo root (D-021)
 
 
 def test_other_defaults_are_unchanged():
     settings = default_settings()
     assert settings.similarity_threshold == 90.0
     assert settings.send_live is False
+
+
+def test_live_send_limit_defaults_to_10():
+    # D-022 item 4: a live run can never send more than this many emails
+    # unless --limit says otherwise.
+    assert default_settings().limit == 10
 
 
 def test_settings_are_frozen():

@@ -6,18 +6,24 @@ parser is injected, so these tests never touch the dataset and do not depend
 on parse_body's behavior. One test runs the real parse_body, only to prove it
 is the default.
 
-Dedup and notify are not built yet. main prints a clearly marked "TODO"
-notice for each, and --send-live is accepted but changes nothing.
+After ingest, main runs dedup and then notify (D-021, D-022). By default
+notify is a dry run that writes drafts. --send-live needs NOTIFY_TO, and the
+real MCP sender is still a stub, so live tests swap in a fake McpSender.
 """
+import csv
+import email
 import importlib.util
 import json
 import sqlite3
 from dataclasses import dataclass
+from email import policy
 from pathlib import Path
 
 import pytest
 
+from enron_pipeline import notify
 from enron_pipeline.config import MAILBOXES, Settings
+from enron_pipeline.models import SendResult, SendStatus
 
 ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location("pipeline_main", ROOT / "main.py")
@@ -76,6 +82,7 @@ def settings(tmp_path, maildir):
         db_path=tmp_path / "out" / "enron.db",  # "out" does not exist yet
         output_dir=tmp_path / "out",
         error_log=tmp_path / "error_log.txt",
+        duplicates_report=tmp_path / "duplicates_report.csv",
         mailboxes=("beck-s",),
     )
 
@@ -97,9 +104,11 @@ def test_no_arguments_gives_the_default_settings():
     assert settings.db_path == Path("output/enron.db")
     assert settings.output_dir == Path("output")
     assert settings.error_log == Path("error_log.txt")
+    assert settings.duplicates_report == Path("duplicates_report.csv")
     assert settings.mailboxes == MAILBOXES
     assert settings.similarity_threshold == 90.0
     assert settings.send_live is False
+    assert settings.limit == 10
 
 
 def test_arguments_override_the_defaults(tmp_path):
@@ -111,6 +120,7 @@ def test_arguments_override_the_defaults(tmp_path):
             "--mailboxes", "a-mail", "b-mail",
             "--threshold", "80",
             "--send-live",
+            "--limit", "3",
         ]
     )
     assert settings.maildir == tmp_path / "m"
@@ -119,6 +129,7 @@ def test_arguments_override_the_defaults(tmp_path):
     assert settings.mailboxes == ("a-mail", "b-mail")
     assert settings.similarity_threshold == 80.0
     assert settings.send_live is True
+    assert settings.limit == 3
 
 
 def test_output_dir_alone_moves_the_database_with_it(tmp_path):
@@ -232,27 +243,250 @@ def test_main_returns_zero_on_success(settings, monkeypatch, capsys):
     assert "Total files found: 3" in capsys.readouterr().out
 
 
-def test_main_marks_dedup_and_notify_as_todo(settings, monkeypatch, capsys):
-    monkeypatch.chdir(settings.error_log.parent)
-    main_module.main(argv_for(settings))
+# --- dedup, notify and the CLI, on a maildir with real duplicate groups --------------------------
+#
+# Group A: an original (<a1>) plus two later re-sends (<a2>, <a3>), same sender,
+# subject and body. Group B: an original (<b1>) and one re-send (<b2>). One more
+# email (<c1>) is unique. So dedup flags 3 emails in 2 groups, a dry run writes
+# 3 drafts, and a live run sends 2 (the latest of each group: <a3> and <b2>).
+
+NOTIFY_TO = "me@gmail.com"
+DATES = {
+    "a1": "Thu, 10 May 2001 10:00:00 -0700 (PDT)",
+    "a2": "Mon, 14 May 2001 10:00:00 -0700 (PDT)",
+    "a3": "Sun, 20 May 2001 10:00:00 -0700 (PDT)",
+    "b1": "Fri, 01 Jun 2001 10:00:00 -0700 (PDT)",
+    "b2": "Sun, 03 Jun 2001 10:00:00 -0700 (PDT)",
+    "c1": "Mon, 04 Jun 2001 10:00:00 -0700 (PDT)",
+}
+
+
+@pytest.fixture
+def dup_settings(tmp_path):
+    root = tmp_path / "dup" / "maildir"
+    people = {"a": ("phillip.allen@enron.com", "Q2 numbers", "Please review the Q2 numbers."),
+              "b": ("jane.doe@enron.com", "Lunch", "Lunch at noon on Friday?"),
+              "c": ("bob.smith@enron.com", "Other", "Something else entirely.")}
+    for number, key in enumerate(DATES, start=1):
+        sender, subject, body = people[key[0]]
+        write_email(
+            root,
+            f"beck-s/inbox/{number}.",
+            {"Message-ID": f"<{key}@thyme>", "From": sender, "Subject": subject, "Date": DATES[key]},
+            body=body + "\n",
+        )
+    return Settings(
+        maildir=root,
+        db_path=tmp_path / "out" / "enron.db",
+        output_dir=tmp_path / "out",
+        error_log=tmp_path / "error_log.txt",
+        duplicates_report=tmp_path / "duplicates_report.csv",
+        mailboxes=("beck-s",),
+    )
+
+
+def read_csv(path):
+    with open(path, newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def email_state(db_path):
+    conn = sqlite3.connect(db_path)
+    try:
+        return {
+            mid: (dup, sent, date)
+            for mid, dup, sent, date in conn.execute(
+                "SELECT message_id, is_duplicate, notification_sent, notification_date FROM emails"
+            )
+        }
+    finally:
+        conn.close()
+
+
+class FakeMcp:
+    """Stands in for notify.McpSender: records what it is given, delivers to notify_to."""
+
+    instances: list = []
+
+    def __init__(self, notify_to):
+        self.notify_to = notify_to
+        self.messages = []
+        FakeMcp.instances.append(self)
+
+    def send(self, message):
+        self.messages.append(message)
+        return SendResult(
+            timestamp=message.date,
+            recipient=self.notify_to,
+            subject=message.subject,
+            status=SendStatus.SENT,
+            error=None,
+            duplicate_message_id=message.references,
+        )
+
+
+@pytest.fixture
+def fake_mcp(monkeypatch):
+    FakeMcp.instances = []
+    monkeypatch.setattr(notify, "McpSender", FakeMcp)
+    monkeypatch.setenv("NOTIFY_TO", NOTIFY_TO)
+    return FakeMcp
+
+
+def run_cli(dup_settings, monkeypatch, *extra):
+    """main() on the duplicates maildir; the default error log and report land in tmp."""
+    monkeypatch.chdir(dup_settings.error_log.parent)
+    return main_module.main(argv_for(dup_settings) + list(extra))
+
+
+def test_dedup_stage_flags_duplicates_and_writes_report_and_stats(dup_settings, capsys):
+    main_module.run_pipeline(dup_settings, body_parser=FakeBodyParser())
+
+    rows = read_csv(dup_settings.duplicates_report)
+    assert [(r["duplicate_message_id"], r["original_message_id"]) for r in rows] == [
+        ("<a2@thyme>", "<a1@thyme>"),
+        ("<a3@thyme>", "<a1@thyme>"),
+        ("<b2@thyme>", "<b1@thyme>"),
+    ]
+    stats = json.loads((dup_settings.output_dir / "dedup_stats.json").read_text())
+    assert stats["duplicate_groups"] == 2
+    assert stats["emails_flagged"] == 3
+    assert stats["largest_group_size"] == 3
+    assert {k: v[0] for k, v in email_state(dup_settings.db_path).items()} == {
+        "<a1@thyme>": 0, "<a2@thyme>": 1, "<a3@thyme>": 1,
+        "<b1@thyme>": 0, "<b2@thyme>": 1, "<c1@thyme>": 0,
+    }
     out = capsys.readouterr().out
-    assert "TODO: dedup is not implemented yet" in out
-    assert "TODO: notify is not implemented yet" in out
+    assert "Duplicate detection" in out
+    assert "emails_flagged: 3" in out
 
 
-def test_send_live_is_accepted_but_sends_nothing(settings, monkeypatch, capsys):
-    monkeypatch.chdir(settings.error_log.parent)
-    assert main_module.main(argv_for(settings) + ["--send-live"]) == 0
-    out = capsys.readouterr().out
-    assert "--send-live has no effect yet" in out
-    assert not (settings.output_dir / "replies").exists()
-    assert not (settings.output_dir / "send_log.csv").exists()
+def test_the_threshold_setting_reaches_dedup(dup_settings):
+    import dataclasses
+
+    strict = dataclasses.replace(dup_settings, similarity_threshold=100.5)  # nothing scores that high
+    main_module.run_pipeline(strict, body_parser=FakeBodyParser())
+    assert read_csv(strict.duplicates_report) == []
+    assert list((strict.output_dir / "replies").glob("*.eml")) == []
 
 
-def test_without_send_live_there_is_no_send_notice(settings, monkeypatch, capsys):
-    monkeypatch.chdir(settings.error_log.parent)
-    main_module.main(argv_for(settings))
-    assert "--send-live" not in capsys.readouterr().out
+def test_the_default_run_is_a_dry_run_with_one_draft_per_flagged_duplicate(
+    dup_settings, monkeypatch, capsys
+):
+    monkeypatch.delenv("NOTIFY_TO", raising=False)  # a dry run must not need it
+
+    assert run_cli(dup_settings, monkeypatch) == 0
+
+    drafts = sorted((dup_settings.output_dir / "replies").glob("*.eml"))
+    assert len(drafts) == 3
+    parsed = [email.message_from_bytes(d.read_bytes(), policy=policy.default) for d in drafts]
+    assert [m["References"] for m in parsed] == ["<a2@thyme>", "<a3@thyme>", "<b2@thyme>"]
+    assert [m["To"] for m in parsed] == [
+        "phillip.allen@enron.com", "phillip.allen@enron.com", "jane.doe@enron.com"
+    ]
+    rows = read_csv(dup_settings.output_dir / "send_log.csv")
+    assert [r["status"] for r in rows] == ["dry_run"] * 3
+    # A dry run never marks anything as notified.
+    assert all(sent == 0 and date is None for _, sent, date in email_state(dup_settings.db_path).values())
+    assert "dry run" in capsys.readouterr().out.lower()
+
+
+def test_a_second_dry_run_replaces_the_drafts_of_the_first(dup_settings, monkeypatch):
+    import dataclasses
+
+    main_module.run_pipeline(dup_settings, body_parser=FakeBodyParser())
+    assert len(list((dup_settings.output_dir / "replies").glob("*.eml"))) == 3
+
+    strict = dataclasses.replace(dup_settings, similarity_threshold=100.5)
+    main_module.run_pipeline(strict, body_parser=FakeBodyParser())
+
+    assert list((dup_settings.output_dir / "replies").glob("*.eml")) == []
+    assert read_csv(dup_settings.output_dir / "send_log.csv") == []
+
+
+def test_live_run_sends_the_latest_duplicate_of_each_group_to_notify_to(
+    dup_settings, monkeypatch, fake_mcp, capsys
+):
+    assert run_cli(dup_settings, monkeypatch, "--send-live") == 0
+
+    [sender] = fake_mcp.instances
+    assert sender.notify_to == NOTIFY_TO  # read from the environment
+    assert [m.references for m in sender.messages] == ["<a3@thyme>", "<b2@thyme>"]
+    assert [m.to for m in sender.messages] == ["phillip.allen@enron.com", "jane.doe@enron.com"]
+    rows = read_csv(dup_settings.output_dir / "send_log.csv")
+    assert [(r["recipient"], r["status"]) for r in rows] == [(NOTIFY_TO, "sent")] * 2
+    state = email_state(dup_settings.db_path)
+    assert [mid for mid, (_, sent, _) in state.items() if sent == 1] == ["<a3@thyme>", "<b2@thyme>"]
+    assert all(date for _, sent, date in state.values() if sent == 1)
+    assert not (dup_settings.output_dir / "replies").exists()  # live mode writes no drafts
+    assert "live" in capsys.readouterr().out.lower()
+
+
+def test_limit_caps_live_sends(dup_settings, monkeypatch, fake_mcp):
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--limit", "1") == 0
+    [sender] = fake_mcp.instances
+    assert [m.references for m in sender.messages] == ["<a3@thyme>"]  # first group of the report
+    assert len(read_csv(dup_settings.output_dir / "send_log.csv")) == 1
+    assert sum(sent for _, sent, _ in email_state(dup_settings.db_path).values()) == 1
+
+
+def test_limit_does_not_cap_the_dry_run(dup_settings, monkeypatch):
+    monkeypatch.delenv("NOTIFY_TO", raising=False)
+    assert run_cli(dup_settings, monkeypatch, "--limit", "1") == 0
+    assert len(list((dup_settings.output_dir / "replies").glob("*.eml"))) == 3
+
+
+def test_limit_zero_sends_nothing_live(dup_settings, monkeypatch, fake_mcp):
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--limit", "0") == 0
+    assert fake_mcp.instances[0].messages == []
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", "not-an-address"])
+def test_live_mode_refuses_to_start_without_notify_to(
+    dup_settings, monkeypatch, capsys, value
+):
+    if value is None:
+        monkeypatch.delenv("NOTIFY_TO", raising=False)
+    else:
+        monkeypatch.setenv("NOTIFY_TO", value)
+
+    assert run_cli(dup_settings, monkeypatch, "--send-live") == 1
+
+    captured = capsys.readouterr()
+    assert "NOTIFY_TO" in captured.err
+    assert "Traceback" not in captured.err
+    # It refused before doing any work: nothing was ingested or written.
+    assert not dup_settings.db_path.exists()
+    assert not dup_settings.error_log.exists()
+    assert not dup_settings.output_dir.exists()
+
+
+def test_the_stub_mcp_sender_fails_every_send_and_the_run_still_finishes(
+    dup_settings, monkeypatch, capsys
+):
+    monkeypatch.setenv("NOTIFY_TO", NOTIFY_TO)  # the real McpSender, still a stub
+
+    assert run_cli(dup_settings, monkeypatch, "--send-live") == 0
+
+    rows = read_csv(dup_settings.output_dir / "send_log.csv")
+    assert [r["status"] for r in rows] == ["failed", "failed"]
+    assert all(r["error"] == "NotImplementedError: configure MCP first" for r in rows)
+    assert all(sent == 0 for _, sent, _ in email_state(dup_settings.db_path).values())
+    assert "configure MCP first" in capsys.readouterr().out
+
+
+def test_a_negative_limit_is_a_usage_error():
+    with pytest.raises(SystemExit) as stopped:
+        main_module.settings_from_args(["--limit", "-1"])
+    assert stopped.value.code == 2
+
+
+def test_run_pipeline_without_a_sender_in_live_mode_is_an_error(dup_settings):
+    import dataclasses
+
+    live = dataclasses.replace(dup_settings, send_live=True)
+    with pytest.raises(ValueError, match="sender"):
+        main_module.run_pipeline(live, body_parser=FakeBodyParser())
 
 
 def test_a_missing_mailbox_is_a_clean_error_not_a_traceback(settings, monkeypatch, capsys):
