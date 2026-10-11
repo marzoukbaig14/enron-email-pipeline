@@ -548,6 +548,44 @@ def test_field_counts_are_raw_counts(conn, maildir, parser):
     assert stats.field_counts["message_id"] == 4
 
 
+def test_has_attachment_true_percent_counts_only_true_values(conn, maildir, parser):
+    # completeness_example: only email 3 has "ATTACH" in its body, so 1 of 4.
+    # has_attachment completeness stays 100%: a boolean is never null.
+    completeness_example(maildir)
+
+    stats = run(conn, maildir, parser)
+
+    assert stats.has_attachment_true == 1
+    assert stats.has_attachment_true_percent() == 25.0
+    assert stats.completeness()["has_attachment"] == 100.0
+
+
+def test_has_attachment_true_percent_ignores_failed_files(conn, maildir, parser):
+    write_email(maildir, "beck-s/inbox/1.", build({"Message-ID": "<1@thyme>"}, body="ATTACH\n"))
+    write_email(maildir, "beck-s/inbox/2.", build({"Message-ID": "<2@thyme>"}))
+    write_email(maildir, "beck-s/inbox/3.", build({"Message-ID": "<3@thyme>", "To": None}, body="ATTACH\n"))
+
+    stats = run(conn, maildir, parser)
+
+    assert (stats.parsed, stats.failed) == (2, 1)
+    assert stats.has_attachment_true_percent() == 50.0  # 1 of 2 parsed, not 2 of 3 found
+
+
+def test_has_attachment_true_percent_is_zero_when_nothing_parsed():
+    assert ExtractionStats().has_attachment_true_percent() == 0.0
+
+
+def test_has_attachment_true_percent_in_a_bare_stats_object():
+    stats = ExtractionStats(parsed=8, has_attachment_true=2)
+    assert stats.has_attachment_true_percent() == 25.0
+    assert stats.to_dict()["has_attachment_true_percent"] == 25.0
+
+
+def test_has_attachment_true_percent_is_rounded_in_the_dict():
+    stats = ExtractionStats(parsed=3, has_attachment_true=1)
+    assert stats.to_dict()["has_attachment_true_percent"] == 33.33
+
+
 def test_completeness_percent_is_hand_computable_for_a_bare_stats_object():
     stats = ExtractionStats(parsed=8, field_counts={"subject": 6, "body": 8})
     assert stats.completeness() == {"subject": 75.0, "body": 100.0}
@@ -572,13 +610,14 @@ def test_extraction_stats_json_matches_the_stats(conn, maildir, parser, tmp_path
     assert set(data["completeness_percent"]) == SPEC_FIELDS
     assert data["completeness_percent"]["message_id"] == 100.0
     assert data["field_counts"]["message_id"] == 3
+    assert data["has_attachment_true_percent"] == 0.0  # no ATTACH marker in this batch
 
 
 def test_stats_json_has_the_documented_keys(conn, maildir, parser):
     stats = run(conn, maildir, parser, mailboxes=())
     assert set(stats.to_dict()) == {
         "total_found", "parsed", "failed", "failures_by_reason",
-        "field_counts", "completeness_percent",
+        "field_counts", "completeness_percent", "has_attachment_true_percent",
     }
 
 
@@ -599,6 +638,7 @@ def test_format_stats_prints_the_numbers_reasons_and_every_field(
     assert "Parsed: 4" in text
     assert "Failed: 1" in text
     assert re.search(r"1\s+missing to", text)
+    assert "has_attachment true: 25.0%" in text  # 1 of 4 parsed emails
     for name, percent in EXPECTED_PERCENT.items():
         assert re.search(rf"{name}\s+{percent:.1f}%", text), name
 

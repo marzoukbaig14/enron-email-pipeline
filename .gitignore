@@ -219,3 +219,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 data/
+
+# Pipeline databases are rebuilt on every run (D-018), so never commit them.
+# The rest of output/ (reports, replies, logs, stats) is a spec deliverable.
+output/*.db
+output/*.db-journal
+/*.db
+/*.db-journal

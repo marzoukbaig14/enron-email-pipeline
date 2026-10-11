@@ -17,6 +17,7 @@ class Settings:
     maildir: Path = Path("data/maildir")
     db_path: Path = Path("output/enron.db")
     output_dir: Path = Path("output")
+    error_log: Path = Path("error_log.txt")  # repo root: a spec deliverable
     mailboxes: tuple[str, ...] | None = MAILBOXES  # None would mean every mailbox
     similarity_threshold: float = 90.0
     send_live: bool = False

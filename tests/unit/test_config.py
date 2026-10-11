@@ -23,6 +23,7 @@ def test_default_paths():
     assert settings.maildir == Path("data/maildir")
     assert settings.db_path == Path("output/enron.db")
     assert settings.output_dir == Path("output")
+    assert settings.error_log == Path("error_log.txt")  # repo root, a spec deliverable
 
 
 def test_other_defaults_are_unchanged():

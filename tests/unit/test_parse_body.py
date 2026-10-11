@@ -336,6 +336,8 @@ def test_markers_with_crlf_line_endings_are_found():
         "Attachment: report.doc",
         "ATTACHED is the file",
         "Attached.",
+        "See the attachments below.",  # plural counts since D-020
+        "ATTACHMENTS: a.doc, b.doc",
     ],
 )
 def test_has_attachment_true_cases(text):
@@ -362,9 +364,8 @@ def test_has_attachment_true_for_file_reference_inside_a_bucket():
     [
         "Nothing here about files.",
         "A word like attachedness does not count.",
-        # D-019 says whole word "attached" or "attachment", so the plural does
-        # not match. Pinned here on purpose; raised in the summary.
-        "Attachments are fine in general.",
+        "The word attachmentsx is not a whole word either.",
+        "Reattached is not a whole word.",
     ],
 )
 def test_has_attachment_false_cases(text):
@@ -408,18 +409,18 @@ def test_colon_line_that_is_not_first_is_a_heading_even_if_a_name():
     assert parse("Hi\nMark:\nPlease call me.\n").headings == "Mark:"
 
 
-def test_all_caps_word_under_three_letters_is_not_a_heading():
-    assert parse("Hello\nOK\nbye\n").headings is None
-    assert parse("Hello\nA B\nbye\n").headings is None
+def test_all_caps_word_under_four_letters_is_not_a_heading():
+    # D-020: the all-caps rule needs a word of 4+ letters (was 3 in D-019).
+    for text in ("OK", "A B", "FYI", "NDA"):
+        assert parse(f"Hello\n{text}\nbye\n").headings is None, text
 
 
-def test_all_caps_word_of_exactly_three_letters_is_a_heading():
-    # "FYI" has three letters, so by the rule as logged in D-019 it IS a
-    # heading. Reported in the summary: the task's test list expected "no".
-    assert parse("Hello\nNDA\nbye\n").headings == "NDA"
+def test_all_caps_word_of_exactly_four_letters_is_a_heading():
+    assert parse("Hello\nITEM\nbye\n").headings == "ITEM"
+    assert parse("Hello\nFYI ITEM\nbye\n").headings == "FYI ITEM"
 
 
-def test_all_caps_needs_a_word_of_three_letters_not_just_digits_or_symbols():
+def test_all_caps_needs_a_long_enough_word_not_just_digits_or_symbols():
     assert parse("Hello\n713-853-7751\nbye\n").headings is None
     assert parse("Hello\n12 A 3\nbye\n").headings is None
 
@@ -528,3 +529,169 @@ def test_non_ascii_text_survives_alongside_qp_decoding():
 def test_odd_input_never_raises(text):
     for cte in (None, "quoted-printable"):
         assert isinstance(parse(text, cte=cte), ParsedBody)
+
+
+# --- More Lotus Notes reply header shapes (D-020 item 1) -------------------------
+# Every shape: the marker is the FIRST line of the header, text above it stays
+# in the body, and a "To:" line must follow.
+
+NOTES_TAIL = "To: Sally Beck/HOU/ECT@ECT\ncc:\nSubject: Re: Summer Cookout\n\nThe 30th works for me.\n"
+
+
+def assert_quoted_from(result, first_line, body="Thanks."):
+    assert result.body == body
+    assert result.quoted_content is not None
+    assert result.quoted_content.split("\n")[0] == first_line
+    assert result.forwarded_content is None
+
+
+def test_shape_a_24_hour_date_without_am_pm():
+    result = parse("Thanks.\n\nTim Poullain-Patterson\n09/11/2000 15:27\n\n" + NOTES_TAIL)
+    assert_quoted_from(result, "Tim Poullain-Patterson")
+
+
+def test_shape_a_sent_by_line_between_date_and_to():
+    text = "Thanks.\n\nKristin Albrecht\n08/03/2000 10:05 AM\nSent by: Kristin Albrecht\n\n" + NOTES_TAIL
+    assert_quoted_from(parse(text), "Kristin Albrecht")
+
+
+def test_shape_a_please_respond_to_line_between_date_and_to():
+    text = "Thanks.\n\nCarol Hudson\n04/11/2001 03:03 PM\nPlease respond to carol@iepa.com\n\n" + NOTES_TAIL
+    assert_quoted_from(parse(text), "Carol Hudson")
+
+
+def test_shape_b_from_name_date_on_one_line_24_hour():
+    text = "Thanks.\n\nFrom:  Sally Beck                           27/10/2000 21:34\n\n" + NOTES_TAIL
+    assert_quoted_from(parse(text), "From:  Sally Beck                           27/10/2000 21:34")
+
+
+def test_shape_b_from_name_at_company_with_am_pm():
+    text = "Thanks.\nFrom:  Margarite Cunningham @ ENRON      09/19/2000 09:21 AM\n" + NOTES_TAIL
+    assert_quoted_from(parse(text), "From:  Margarite Cunningham @ ENRON      09/19/2000 09:21 AM")
+
+
+def test_shape_b_with_a_sent_by_line():
+    text = "Thanks.\nFrom: Kim Rizzi @ ENRON    11/27/2000 02:11 PM\nSent by: Jennifer Jordan@ENRON\n" + NOTES_TAIL
+    assert parse(text).body == "Thanks."
+
+
+def test_shape_c_name_on_date_on_one_line():
+    line = "Beverly Gibson <bgibson@yahoo.com> on 08/23/2000 10:31:41 AM"
+    text = f"Thanks.\n\n{line}\nTo: Sally Beck <sally.beck@enron.com>\ncc:\nSubject: fashion show\n"
+    assert_quoted_from(parse(text), line)
+
+
+def test_shape_c_with_please_respond_to_line():
+    line = '"Brian\'s Mail" <bk@mail.utexas.edu> on 10/10/2000 06:16:33 PM'
+    text = f"Thanks.\n{line}\nPlease respond to \"Brian's Mail\" <bk@mail.utexas.edu>\nTo: Sally\ncc:\nSubject: x\n"
+    assert_quoted_from(parse(text), line)
+
+
+def test_shape_d_bare_to_block_after_a_blank_line():
+    text = "Thanks,\nPatti\n\n\nTo: Shona Wilson/NA/Enron@Enron\ncc:  \n\nSubject: Chris Abel\n\nbody text\n"
+    result = parse(text)
+    assert result.body == "Thanks,\nPatti"
+    assert result.quoted_content.startswith("To: Shona Wilson")
+    assert result.quoted_content.endswith("body text")
+
+
+def test_shape_d_to_list_wrapped_onto_continuation_lines():
+    text = "Thanks.\n\nTo: a@x.com, b@x.com,\nc@x.com, d@x.com\ncc: e@x.com\nSubject: x\n"
+    assert_quoted_from(parse(text), "To: a@x.com, b@x.com,")
+
+
+def test_shape_d_subject_without_cc_also_counts():
+    assert_quoted_from(parse("Thanks.\n\nTo: Tim\nSubject: Lunch\n"), "To: Tim")
+
+
+def test_shape_d_to_block_at_the_start_of_the_body():
+    result = parse("To: Tim\ncc: Bob\nSubject: x\n\nHello\n")
+    assert result.body == ""
+    assert result.quoted_content == "To: Tim\ncc: Bob\nSubject: x\n\nHello"
+
+
+def test_shape_d_is_case_insensitive():
+    assert parse("Thanks.\n\nTO: Tim\nCC:\nSUBJECT: x\n").quoted_content.startswith("TO: Tim")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # To: directly under a text line (no blank above) is not shape d.
+        "Reply below\nTo: Tim\ncc: Bob\nSubject: x\n",
+        # Blank above, but no cc:/Subject: line in the same block.
+        "Hi\n\nTo: be sure to call me\nThanks\n",
+        # The block is cut by a blank line before any cc:/Subject:.
+        "Hi\n\nTo: Tim\n\nsome text\ncc: Bob\n",
+        # A From:+date line with no To: after it is just text.
+        "Hi\nFrom: Tim    04/11/2001 05:26 PM\nNothing else.\n",
+        # "on <date>" in ordinary prose with no To: after it.
+        "I will call you on 04/11/2001 05:26 PM\nbye\n",
+    ],
+)
+def test_near_misses_are_not_markers(text):
+    result = parse(text)
+    assert result.quoted_content is None
+    assert result.forwarded_content is None
+    assert result.body == text.rstrip()
+
+
+def test_known_gap_outlook_header_block_without_original_message_line_stays_in_body():
+    # Pinned on purpose (D-020 item 2, known gap): fewer than 20 files.
+    text = "Thanks.\nFrom: Tim Belden\nSent: Monday, May 14, 2001 4:39 PM\nTo: Phillip Allen\nSubject: Lunch\n"
+    assert parse(text).quoted_content is None
+
+
+def test_known_gap_inline_attachment_header_stays_in_body():
+    text = "Hi.\n--------- Inline attachment follows ---------\nFrom: </O=ENRON/CN=SBECK>\nTo: x\ncc:\nSubject: y\n"
+    # "To: x" has a text line above it, so shape d does not apply either.
+    assert parse(text).quoted_content is None
+
+
+def test_earliest_marker_wins_among_the_new_shapes():
+    text = (
+        "Top.\n\nFrom: A B   01/02/2001 10:00 AM\nTo: x\ncc:\nSubject: s\n\n"
+        "Middle.\n\nC D\n01/01/2001 09:00 AM\nTo: y\ncc:\nSubject: s\n"
+    )
+    result = parse(text)
+    assert result.body == "Top."
+    assert result.quoted_content.count("To:") == 2
+
+
+def test_headings_inside_a_new_shape_bucket_are_not_extracted():
+    result = parse("Thanks.\n\nTo: Tim\ncc:\nSubject: x\n\nAGENDA\nAction Items:\n")
+    assert result.headings is None
+
+
+# --- Control characters (D-020 item 5) ---------------------------------------------
+
+
+def test_control_characters_are_stripped_but_newline_and_tab_stay():
+    result = parse("a\x01b\x07c\x00d\x7fe\x0cf\tg\nh")
+    assert result.body == "abcdef\tg\nh"
+
+
+def test_control_characters_are_stripped_from_buckets_too():
+    result = parse("Hi\n-----Original Message-----\nFrom: T\x01im\n")
+    assert result.quoted_content == "-----Original Message-----\nFrom: Tim"
+
+
+def test_qp_escape_that_decodes_to_a_control_character_is_stripped():
+    # Real shape from beck-s/_sent_mail/236: "Int=01,l" (an apostrophe in the source).
+    assert parse("Arrive Int=01,l", cte="quoted-printable").body == "Arrive Int,l"
+    assert parse("a=07b", cte="quoted-printable").body == "ab"
+
+
+def test_c1_range_and_normal_unicode_are_left_alone():
+    assert parse("a\x93b\x85c").body == "a\x93b\x85c"
+    assert parse("naïve “quote” — ok").body == "naïve “quote” — ok"
+
+
+def test_stripping_happens_before_markers_and_headings_are_found():
+    # A control character in the middle of a marker or heading must not hide it.
+    assert parse("Hi\n-----Original\x01 Message-----\nx\n").quoted_content is not None
+    assert parse("Hello\nAGEN\x01DA\nbye\n").headings == "AGENDA"
+
+
+def test_cr_is_a_line_ending_not_a_stripped_control_character():
+    assert parse("a\rb").body == "a\nb"

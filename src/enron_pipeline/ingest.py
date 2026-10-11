@@ -66,6 +66,7 @@ class ExtractionStats:
     failed: int = 0
     failures_by_reason: dict[str, int] = field(default_factory=dict)
     field_counts: dict[str, int] = field(default_factory=dict)  # populated count per field
+    has_attachment_true: int = 0  # parsed emails whose has_attachment is True
 
     def completeness(self) -> dict[str, float]:
         """Percent (0-100) of parsed emails with a populated value, per field.
@@ -83,6 +84,16 @@ class ExtractionStats:
             for name, count in self.field_counts.items()
         }
 
+    def has_attachment_true_percent(self) -> float:
+        """Percent (0-100) of parsed emails with has_attachment True.
+
+        Separate from completeness()["has_attachment"], which is always 100%
+        because a boolean is never null. 0.0 when nothing was parsed.
+        """
+        if self.parsed == 0:
+            return 0.0
+        return 100.0 * self.has_attachment_true / self.parsed
+
     def to_dict(self) -> dict:
         """The shape saved as extraction_stats.json."""
         by_reason = sorted(self.failures_by_reason.items(), key=lambda item: (-item[1], item[0]))
@@ -95,10 +106,13 @@ class ExtractionStats:
             "completeness_percent": {
                 name: round(percent, 2) for name, percent in self.completeness().items()
             },
+            "has_attachment_true_percent": round(self.has_attachment_true_percent(), 2),
         }
 
     def _record_parsed(self, record: EmailRecord) -> None:
         self.parsed += 1
+        if record.has_attachment:
+            self.has_attachment_true += 1
         for name, value in _field_values(record).items():
             if _is_populated(value):
                 self.field_counts[name] += 1
@@ -242,6 +256,7 @@ def format_stats(stats: ExtractionStats) -> str:
         f"  {name:<18} {percent:6.1f}%"
         for name, percent in stats.completeness().items()
     ]
+    lines += ["", f"  has_attachment true: {stats.has_attachment_true_percent():.1f}%"]
     return "\n".join(lines)
 
 

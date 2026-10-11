@@ -286,3 +286,48 @@ Decision:
    "". Empty buckets are None.
 Consequences: Dedup compares main bodies without quoted chains or QP
 junk. Heading detection is a heuristic and documented as such.
+
+## D-020: Body parser amendments (Notes header shapes, control characters)
+Date: 2026-10-11
+Status: Accepted
+Context: A real-data check of D-019 on beck-s, presto-k and ring-a (14,352
+parsed files) found 1,079 files (7.5%) where a reply header block stayed
+in the main body, producing junk headings ("cc:" in 720 files). Lotus
+Notes uses more header shapes than D-019 item 4 defines. The check also
+found control characters in 476 quoted-printable bodies (the source writes
+apostrophes as =01), "FYI" as a heading in 91 files, and 35 files whose
+only attachment word was the plural.
+Decision: amends D-019 items 4, 5 and 6, and adds item 9.
+1. More Lotus Notes reply headers count as quoted markers, in addition to
+   D-019 item 4. In every shape the marker is the first line of the
+   header, and a "To:" line must follow it, after any blank lines and
+   optional "Sent by:" or "Please respond to" lines.
+   a. Name line, date line, To:. The date may also be 24-hour with no
+      AM/PM ("27/10/2000 21:34"). Only the digit shape is checked, so
+      dd/mm and mm/dd both match.
+   b. "From: <name> <date>", with the date at the end of the same line.
+   c. "<name> on <date>", with the date at the end of the same line.
+   d. A "To:" line with a blank line (or the start of the body) above it,
+      followed by a "cc:" or "Subject:" line. The To: list may wrap onto
+      continuation lines. The marker is the To: line itself.
+2. Only shapes covering at least 20 files were added. Counts are for the
+   three mailboxes above, before this change. Known gaps, not handled:
+   - Outlook style "From:/Sent:/To:/Subject:" block with no
+     "-----Original Message-----" line (10 files).
+   - "--------- Inline attachment follows ---------" header blocks, mostly
+     calendar items (9 files).
+   - A long tail of shapes with fewer than 20 files each, for example a
+     date wrapped onto the next line, or a trailing token after the date
+     (about 4 files each).
+3. D-019 item 6, all-caps rule: the word must have 4 or more letters (was
+   3), so "FYI" and "NDA" are not headings.
+4. D-019 item 5: "attachments" also counts as a whole word, next to
+   "attached" and "attachment".
+5. New item 9: after decoding, control characters are stripped from body
+   and buckets, except \n and \t. That means U+0000 to U+001F and U+007F.
+   U+0080 to U+009F are left alone (none occur in the three mailboxes, and
+   in Latin-1 decoded text they are usually mis-decoded quotes).
+Consequences: Fewer reply chains leak into the main body, so dedup compares
+cleaner bodies and fewer header lines become headings. Stripping =01
+apostrophes loses the character ("Int=01,l" becomes "Int,l"). The gaps above
+are visible, not hidden. Heading detection is still a heuristic.
