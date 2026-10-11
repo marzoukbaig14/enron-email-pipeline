@@ -45,6 +45,7 @@ class ParsedHeaders:
     x_folder: str | None
     x_origin: str | None
     content_type: str | None
+    content_transfer_encoding: str | None   # for parse_body (D-019); not stored in the DB
     raw_body: str               # everything after the header block, decoded
 
 def parse_headers(raw: bytes) -> ParsedHeaders
@@ -73,12 +74,18 @@ class ParsedBody:
     headings: str | None
     has_attachment: bool
 
-def parse_body(raw_body: str, content_type: str | None = None) -> ParsedBody
+def parse_body(
+    raw_body: str,
+    content_type: str | None = None,
+    content_transfer_encoding: str | None = None,
+) -> ParsedBody
 def compute_content_hash(body: str) -> str          # input definition: see open question 4
 ```
 
-Inputs: the decoded body string and the Content-Type header value (used for the attachment inference).
+Inputs: the decoded body string, the Content-Type header value (attachment inference, and the charset used when decoding quoted-printable) and the Content-Transfer-Encoding header value (quoted-printable is decoded only when it says so). Behavior is fixed by D-019.
 Never raises on odd bodies. It returns its best effort, and an empty body is valid.
+
+*Change from the first version of this plan (D-019): the third parameter `content_transfer_encoding` was added, and `ParsedHeaders` gained the matching field. ingest passes `parsed.content_type` and `parsed.content_transfer_encoding`.*
 
 Must NOT: touch headers beyond the `content_type` argument, open files, touch the DB, read config.
 
@@ -86,12 +93,14 @@ Must NOT: touch headers beyond the `content_type` argument, open files, touch th
 **Responsibility:** find email files and name them.
 
 ```python
-def discover_email_files(maildir: Path, mailboxes: Sequence[str] | None = None) -> Iterator[Path]
-def source_file_for(path: Path, maildir: Path) -> str   # "maildir/lay-k/inbox/45"
-def mailbox_for(source_file: str) -> str                # "lay-k"
+def discover_email_files(maildir: Path, mailboxes: Sequence[str] | None = None) -> Iterator[str]
+def source_path(maildir: Path, source_file: str) -> Path   # the real file for a source_file
+def mailbox_for(source_file: str) -> str                   # "maildir/lay-k/inbox/45" -> "lay-k"
 ```
 
-`mailboxes=None` means all mailboxes. Output order is sorted, so runs are deterministic.
+`discover_email_files` yields `source_file` strings such as `"maildir/lay-k/inbox/45"`: relative, forward slashes, starting with the maildir folder's own name, files only, hidden files and folders skipped. `mailboxes=None` means all mailboxes. Output order is sorted (plain string order), so runs are deterministic. If any named mailbox folder is missing it raises `FileNotFoundError` naming every missing one. This happens when the function is called, before anything is yielded. A mailbox name that is not a plain folder name (`""`, `".."`, `"a/b"`) raises `ValueError`.
+
+*Change from the first version of this plan (D-018): it yielded `Path` and had `source_file_for(path, maildir)`. It now yields the `source_file` string directly, so `source_file_for` is gone and `source_path` is the one place that knows how a `source_file` maps back to a file (relative to the maildir's parent).*
 
 Must NOT: open or read file contents, parse, touch the DB, read config.
 
@@ -99,16 +108,20 @@ Must NOT: open or read file contents, parse, touch the DB, read config.
 **Responsibility:** the SQLite write side of ingest, plus the notification update.
 
 ```python
-InsertStatus = Literal["inserted", "duplicate_message_id", "duplicate_source_file"]
-
-def connect(path: str | Path = ":memory:") -> sqlite3.Connection     # runs PRAGMA foreign_keys = ON
-def init_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> None
-def insert_email(conn: sqlite3.Connection, record: EmailRecord) -> InsertStatus
+def connect(path: str | Path = ":memory:") -> sqlite3.Connection     # PRAGMA foreign_keys = ON; isolation_level=None
+def init_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> None   # drops every table, rebuilds
+def insert_email(conn: sqlite3.Connection, record: EmailRecord) -> int                # returns emails.id
 def insert_parse_failure(conn: sqlite3.Connection, failure: ParseFailure) -> None
 def mark_notified(conn: sqlite3.Connection, message_id: str, when: datetime) -> None
 ```
 
-`insert_email` inserts the email and its recipients in one go and reports unique-constraint conflicts as a status instead of raising. It converts `datetime` to ISO 8601 UTC text and `bool` to 0/1. Functions do not commit. The caller controls transactions. `schema_path=None` means the repo-root `schema.sql`.
+`init_schema` drops every existing table and rebuilds from `schema.sql`, so each run starts clean (D-018). `schema_path=None` means the repo-root `schema.sql`. It commits any open transaction.
+
+`insert_email` inserts the email and its recipients as one all-or-nothing unit and raises `sqlite3.IntegrityError` on any constraint error (duplicate `message_id` or `source_file`, bad `copy_of`), leaving no partial rows. It converts `datetime` to ISO 8601 UTC text (naive datetimes raise `ValueError`), `bool` to 0/1 and enums to their string value.
+
+Transactions: `connect` sets `isolation_level=None`, so only the SQL written out starts or ends a transaction. `insert_email` runs inside a `SAVEPOINT`. If the caller opened a transaction (`BEGIN`), a failed insert undoes only itself and the caller commits. If not, the insert is its own transaction and is committed on return. `insert_parse_failure` does not commit.
+
+*Change from the first version of this plan (D-018): `insert_email` returned an `InsertStatus` ("inserted", "duplicate_message_id", "duplicate_source_file") instead of raising. It now raises and returns the new row id, and `InsertStatus` is removed. `init_schema` now drops existing tables first. "Functions do not commit" became the savepoint rule above, so an insert is atomic whether or not the caller has a transaction open.*
 
 Must NOT: parse, find duplicates, send, or import dedup/notify.
 
@@ -116,27 +129,40 @@ Must NOT: parse, find duplicates, send, or import dedup/notify.
 **Responsibility:** wire discover -> parse_headers -> parse_body -> EmailRecord -> db, per file, and survive every kind of bad input.
 
 ```python
+BodyParser = Callable[[str, str | None, str | None], ParsedBody]   # same arguments as parse_body
+
+STATS_FIELDS: tuple[str, ...]        # the 20 fields of spec Section 3
+
 @dataclass
 class ExtractionStats:
     total_found: int
-    parsed: int
+    parsed: int                      # stored in emails; total_found = parsed + failed
     failed: int
-    inserted: int
-    skipped_existing: int
-    field_counts: dict[str, int]                 # non-empty count per field
-    def completeness(self) -> dict[str, float]
+    failures_by_reason: dict[str, int]
+    field_counts: dict[str, int]     # populated count per STATS_FIELDS entry
+    def completeness(self) -> dict[str, float]    # percent 0-100 of parsed emails
+    def to_dict(self) -> dict                     # the extraction_stats.json shape
 
-def process_file(path: Path, maildir: Path) -> EmailRecord          # raises ParseError
+def process_file(maildir: Path, source_file: str, body_parser: BodyParser) -> EmailRecord   # raises ParseError
 def ingest_mailboxes(
     conn: sqlite3.Connection,
     maildir: Path,
-    mailboxes: Sequence[str] | None = None,
+    mailboxes: Sequence[str] | None,
+    body_parser: BodyParser,
     error_log: Path | None = None,
 ) -> ExtractionStats
-def write_error_log(failures: Sequence[ParseFailure], path: Path) -> None
+def write_error_log(failures: Sequence[ParseFailure], path: Path) -> None   # "<source_file> | <reason>"
+def format_stats(stats: ExtractionStats) -> str     # console report; main.py prints it
+def write_stats(stats: ExtractionStats, path: Path) -> None   # output/extraction_stats.json
 ```
 
-`ingest_mailboxes` catches `ParseError` and any other `Exception` per file, turns each into a `ParseFailure`, writes it to the DB and the error log, and keeps going. The pipeline must never crash on bad input. A `ParseError` logs its `reason` as is. Any unexpected exception logs the exception type and message, as `"unexpected <ExceptionType>: <message>"`, so it can be told apart from a known parse failure and grouped in stats. The same rule covers read errors and DB errors on a single file. Re-running is safe because `source_file` is UNIQUE: existing files count as `skipped_existing`.
+`ingest_mailboxes` catches `ParseError` and any other `Exception` per file, turns each into a `ParseFailure`, writes it to the DB and the error log, and keeps going. The pipeline must never crash on bad input. A `ParseError` logs its `reason` as is. Any unexpected exception logs the exception type and message, as `"unexpected <ExceptionType>: <message>"` (whitespace collapsed, so one failure is one log line), so it can be told apart from a known parse failure and grouped in stats. The same rule covers read errors and DB errors on a single file, such as a duplicate Message-ID. A missing mailbox is the one exception: it is a setup mistake, so `FileNotFoundError` propagates before any file is touched. The run is one transaction, committed at the end unless the caller had already opened one.
+
+The body parser is a required argument. `main.py` passes `parse_body.parse_body`, and `ingest` never imports `parse_body`, so it can be tested with a fake. It is called positionally as `body_parser(raw_body, content_type, content_transfer_encoding)`. The object it returns needs the `ParsedBody` attributes. `content_hash` is not set yet (open question 4).
+
+Completeness is a percent of parsed emails that have a populated value: non-null and non-empty, where whitespace-only text and empty lists count as empty. `has_attachment` is a boolean and never null, so it always counts. Recipient lists are reported as `to_addresses`, `cc_addresses` and `bcc_addresses`, as in the spec.
+
+*Change from the first version of this plan (D-018): `inserted` and `skipped_existing` are removed, because the database is rebuilt on every run and a duplicate is now a logged failure. `failures_by_reason`, `to_dict`, `format_stats` and `write_stats` are added. `process_file` takes the `source_file` string and a `body_parser`, and `ingest_mailboxes` takes the `body_parser`. "Re-running is safe because `source_file` is UNIQUE" is gone: a re-run starts from an empty database.*
 
 Must NOT: do header or body parsing itself, run dedup or notify, read config (settings arrive as arguments), let one file stop the run.
 
@@ -199,10 +225,11 @@ class Settings:
     maildir: Path = Path("data/maildir")
     db_path: Path = Path("output/enron.db")
     output_dir: Path = Path("output")
-    mailboxes: tuple[str, ...] | None = None      # filled by D-013
+    mailboxes: tuple[str, ...] | None = MAILBOXES  # D-013; None would mean every mailbox
     similarity_threshold: float = 90.0
     send_live: bool = False
 
+MAILBOXES = ("ring-a", "ybarbo-p", "presto-k", "baughman-d", "beck-s")   # D-013, Set 1
 def default_settings() -> Settings
 ```
 
@@ -296,13 +323,13 @@ Both implementations live in `notify.py` for now. If the live sender grows, spli
 ```
 data/maildir/<mailbox>/<folder>/<file>
         |
-   discover.discover_email_files        -> Path, source_file, mailbox
+   discover.discover_email_files        -> source_file strings (mailbox via mailbox_for)
         |
    ingest reads the file bytes
         |
    parse_headers.parse_headers(bytes)   -> ParsedHeaders      (ParseError -> ParseFailure)
         |
-   parse_body.parse_body(raw_body, content_type) -> ParsedBody
+   parse_body.parse_body(raw_body, content_type, content_transfer_encoding) -> ParsedBody
         |
    ingest assembles                     -> EmailRecord (+ Recipients)
         |

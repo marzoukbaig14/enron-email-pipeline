@@ -35,6 +35,7 @@ class ParsedHeaders:
     x_folder: str | None
     x_origin: str | None
     content_type: str | None
+    content_transfer_encoding: str | None  # for parse_body; not stored in the DB
     raw_body: str  # everything after the header block, decoded
 
 
@@ -123,6 +124,7 @@ def parse_headers(raw: bytes) -> ParsedHeaders:
         x_folder=_header(msg, "X-Folder") or None,
         x_origin=_header(msg, "X-Origin") or None,
         content_type=_header(msg, "Content-Type") or None,
+        content_transfer_encoding=_header(msg, "Content-Transfer-Encoding") or None,
         raw_body=raw_body,
     )
 

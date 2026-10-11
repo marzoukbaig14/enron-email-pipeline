@@ -210,3 +210,79 @@ Decision:
    unquoted comma inside a display name does not split the recipient.
 Consequences: Stats group failures cleanly. Real Enron recipient
 formats parse into one recipient each.
+
+## D-013: Final mailbox set
+Date: 2026-10-11
+Status: Accepted
+Context: D-010 and D-011 defined stratified selection with greedy edge
+case coverage. SELECTION.md produced three candidate sets.
+Decision: Set 1: ring-a, ybarbo-p, presto-k, baughman-d, beck-s. One
+mailbox per size band (706 to 11,830 files), 18,791 files, about
+18,165 estimated parsed, 22 of 23 checklist items covered. Chosen over
+Set 2 and Set 3 because it has the most real resends (68 Type C
+groups), which is what duplicate detection targets, while still having
+164 cross-mailbox storage-copy groups to exercise copy collapse.
+Consequences: beck-s is about 60% of volume. The README explains the
+selection method and this tradeoff.
+
+## D-018: db, discover, and ingest behavior
+Date: 2026-10-11
+Status: Accepted
+Decision:
+1. db: each pipeline run deletes and rebuilds the database from
+   schema.sql. connect() always sets PRAGMA foreign_keys = ON.
+   insert_email writes the email and its recipients in one transaction
+   and raises on any constraint error. db converts datetimes to ISO
+   8601 UTC text with Z, bools to 0/1, enums to plain strings.
+2. discover: takes a maildir root and a list of mailboxes, yields
+   relative paths like "maildir/beck-s/inbox/1." in sorted order, files
+   only, skipping hidden files. If any mailbox folder is missing, it
+   raises before yielding anything, naming every missing mailbox.
+3. ingest: wires discover, parse_headers, a body parser, and db. The
+   body parser is passed in as a function, called with the same
+   arguments as parse_body's signature in module-layout.md, so ingest
+   is testable without parse_body. ParseError becomes a failure with
+   its reason. Any other exception becomes
+   "unexpected <ExceptionType>: <message>". Failures go to
+   error_log.txt ("<source_file> | <reason>") and parse_failures. The
+   pipeline never crashes on a bad file.
+4. Extraction stats: total files found, parsed, failed, failures by
+   reason, and per-field completeness (percent non-null and non-empty)
+   for every field in Section 3 of the spec. Printed to console and
+   saved as output/extraction_stats.json.
+5. config: holds the D-013 mailbox list and default paths.
+Consequences: Runs are reproducible. ingest can be built before
+parse_body exists.
+
+## D-019: Body parser behavior
+Date: 2026-10-11
+Status: Accepted
+Context: Spec wants body separated from forwarded and quoted content,
+plus has_attachment and headings. Exploration found quoted-printable
+bodies, Outlook "-----Original Message-----" replies, Lotus Notes
+"Forwarded by" blocks and inline reply headers, nested chains, and
+"<<file>>" attachment references. Attachments were stripped from the
+corpus.
+Decision:
+1. Decode quoted-printable only when Content-Transfer-Encoding says so.
+2. Normalize line endings to \n.
+3. body is everything before the first reply or forward marker.
+   Everything from that marker on goes into one bucket, nested chains
+   included.
+4. The marker decides the bucket. "-----Original Message-----", Lotus
+   Notes inline reply headers (name line, date line, then To:), and
+   lines starting with ">" go to quoted_content. "Forwarded by" and
+   "----- Forwarded Message" style blocks go to forwarded_content.
+5. has_attachment is true if any part has a "<<...>>" reference, the
+   Content-Type is multipart, or the main body mentions "attached" or
+   "attachment" (case-insensitive, whole word).
+6. headings, main body only. A line of 60 chars or less, not ending in
+   a period, that is either all caps with at least one word of 3+
+   letters, or followed by a line of --- or ===, or ends in ":" with 5
+   words or fewer and is not the first non-empty line. Stored joined by
+   \n, None if none.
+7. Signatures and disclaimers stay in the body.
+8. Trailing whitespace stripped from body and buckets. Empty body is
+   "". Empty buckets are None.
+Consequences: Dedup compares main bodies without quoted chains or QP
+junk. Heading detection is a heuristic and documented as such.

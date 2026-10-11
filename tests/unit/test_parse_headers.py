@@ -362,6 +362,16 @@ def test_optional_header_missing_or_blank_is_none(header, attr, value, extra_for
     assert getattr(parse_headers(build(extra=extra)), attr) is None
 
 
+def test_content_transfer_encoding_extracted_stripped_and_none_when_absent_or_blank():  # D-019
+    # parse_body needs this to know whether to decode quoted-printable. It is
+    # not stored in the DB, so it is not in OPTIONAL_HEADERS above.
+    header = "Content-Transfer-Encoding"
+    present = parse_headers(build(extra=[(header, "  quoted-printable  ")]))
+    assert present.content_transfer_encoding == "quoted-printable"
+    assert parse_headers(build()).content_transfer_encoding is None
+    assert parse_headers(build(extra=[(header, "   ")])).content_transfer_encoding is None
+
+
 # --- Robustness ------------------------------------------------------------
 
 
