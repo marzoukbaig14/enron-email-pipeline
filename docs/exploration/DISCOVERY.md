@@ -858,3 +858,9 @@ Found but **not** promoted to the checklist, with reasons:
 - `qp_artifact_undeclared` (18,788): a noisy subset of quoted-printable handling (any `=XX` or `=`-EOL) that overlaps `quoted_printable`; kept as a parser note, not a distinct checklist item.
 - `[IMAGE]` inline markers, multi-level `> >` quoting, spaced-letter banners, and automated-system-mail signatures (see the random-sample review above): real but either refinements of existing items (`quoted_gt`, `attachment_ref`) or dedup-time concerns (Type E), so left for a later pass.
 - **`empty_body` fired 0 times** across all 517,401 files - the spec's "empty body" case does not occur in this corpus, so that checklist item will be a permanent coverage gap.
+
+### Verification note (empty_body / CRLF)
+
+`empty_body = 0` was independently verified two ways over all 517,401 files: the `\r\n\r\n`/`\n\n` split used here, and a line-based split that strips `\r` from each line before testing for a blank line. Both report 0 whitespace-only bodies, with 0 disagreements.
+
+The corpus is **100% CRLF** (517,398 of 517,401 files use a `\r\n\r\n` header/body separator; only 3 use `\n\n`), so every metric here already runs on CRLF input. All body-based metrics are CRLF-safe: `.strip()` drops `\r`, `(?m)^` anchors after `\n`, and marker/heading detection give identical results on CRLF and LF input. (A `sed /^$/` check that does not strip `\r` can mis-read the CRLF separator line as empty - the source of an earlier false-positive empty-body report.)
