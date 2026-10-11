@@ -165,3 +165,48 @@ Decision:
 Consequences: Typos and in-place mutation fail loudly. Modules can pass
 plain strings or enums. Frozen fields set in __post_init__ use
 object.__setattr__.
+
+## D-016: Header parser behavior
+Date: 2026-10-11
+Status: Accepted
+Context: Spec defines mandatory and optional header fields. Exploration
+showed folded To/Cc, missing To in ~4% of files, Bcc mirroring Cc,
+placeholder addresses, and dates that all carry numeric offsets.
+Decision:
+1. Missing Message-ID, From, To, Subject header, or Date fails the
+   email with a ParseError naming the field.
+2. To header present but blank counts as missing and fails.
+3. Subject: missing header fails; blank value is stored as "".
+4. Bcc is stored as-is, even when it mirrors Cc.
+5. Placeholder addresses (e.g. no_address@enron.com) are kept as
+   normal addresses.
+6. Repeated addresses within one header are kept; position tells
+   them apart.
+7. All addresses are lowercased and stripped.
+8. Recipient strings with no @ are kept raw. A From value with no @
+   fails the email.
+9. Date: use the numeric offset if present, else map the timezone
+   abbreviation (PST, PDT, MST, MDT, CST, CDT, EST, EDT, GMT, UT, UTC),
+   else fail. Stored as ISO 8601 UTC with Z; the original header is kept
+   in date_raw.
+10. Optional X-headers and Content-Type: None when missing or blank.
+11. Re:/Fwd: prefixes are kept in subject exactly as written.
+Consequences: Failures are explicit and logged, never guessed. Drafts
+and calendar items without To land in the error log. Dedup gets
+lowercased addresses for blocking.
+
+## D-017: Header parser amendments
+Date: 2026-10-11
+Status: Accepted
+Context: Test review of D-016 and a grep of real data.
+Decision:
+1. Failure reasons use fixed formats: "missing <field>",
+   "invalid <field>: <detail>", "empty input".
+2. All recipient values are lowercased, including ones without @.
+3. Input with no blank line is headers only with an empty body, not a
+   failure. Supersedes the header-only case in D-016 test planning.
+4. LDAP-style recipients ("Last, First </O=ENRON/...>") appear in To
+   and Cc. The bracketed DN is stored, lowercased, as the address. An
+   unquoted comma inside a display name does not split the recipient.
+Consequences: Stats group failures cleanly. Real Enron recipient
+formats parse into one recipient each.

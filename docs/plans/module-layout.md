@@ -55,6 +55,10 @@ def parse_address_list(value: str) -> list[str]     # unfolds, splits, strips di
 Inputs: bytes only.
 Raises `ParseError` when a mandatory header (message_id, date, from, to) is missing or unparseable. The reason names the header, e.g. `"missing To header"`.
 
+Recipient splitting rules (`parse_address_list`, on top of D-016 and D-017):
+- **Surname gluing.** An unquoted `Last, First <addr>` is one recipient. A segment is glued onto the following `First <addr>` segment only if it looks like a surname: letters, spaces, hyphens and apostrophes only, no `@` and no dot. So `Jordan, Mike </O=ENRON/...>`, `O'Neal, Shaq <s@x.com>` and `Smith-Jones, Ann <a@x.com>` are one recipient each, while `tim.belden, Mike <m@x.com>` is two.
+- **Unbalanced quotes.** If the double quotes in a header do not pair up, quotes are ignored and commas are split outside `<...>` only. One stray quote therefore cannot swallow the recipients after it.
+
 Must NOT: open files, know `source_file` or `mailbox`, split the body into forwarded/quoted parts, read config.
 
 ### parse_body.py
