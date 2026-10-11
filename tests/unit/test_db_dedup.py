@@ -59,6 +59,7 @@ def flag(duplicate: str, original: str, score: float = 95.5) -> DuplicateFlag:
         duplicate_message_id=duplicate,
         original_message_id=original,
         subject="s",
+        original_subject="s",
         from_address="a@enron.com",
         duplicate_date=T0 + timedelta(days=1),
         original_date=T0,

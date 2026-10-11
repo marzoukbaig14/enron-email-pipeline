@@ -629,6 +629,28 @@ def test_re_prefix_and_plain_subject_from_the_same_sender_share_a_block(conn):
     assert flags[0].subject == "Re: Q2 numbers"
 
 
+def test_flag_carries_the_original_subject_and_the_flagged_subject_separately(conn):
+    # D-024: the notice subject comes from the original, the body line from the flagged email.
+    seed(conn, email(1, subject="Q2 numbers"), email(2, subject="Re: Q2 numbers"))
+    [flag] = run_both(conn)
+    assert flag.original_subject == "Q2 numbers"
+    assert flag.subject == "Re: Q2 numbers"
+
+
+def test_original_subject_is_the_earliest_emails_even_when_it_has_a_prefix(conn):
+    seed(conn, email(1, subject="RE: Q2 numbers"), email(2, subject="Q2 numbers"), email(3, subject="Fwd: q2 numbers"))
+    flags = run_both(conn)
+    assert {f.original_subject for f in flags} == {"RE: Q2 numbers"}
+    assert {f.subject for f in flags} == {"Q2 numbers", "Fwd: q2 numbers"}
+
+
+def test_the_report_keeps_the_seven_spec_columns_without_the_original_subject(conn, tmp_path):
+    seed(conn, email(1), email(2))
+    path = tmp_path / "r.csv"
+    dedup.write_report(run_both(conn), path)
+    assert read_report(path)[0] == REPORT_COLUMNS
+
+
 def test_prefix_stacks_and_case_do_not_split_a_block(conn):
     seed(conn, email(1, subject="Q2 Numbers"), email(2, subject="RE: FW: re: q2   numbers"))
     assert flagged_ids(run_both(conn)) == {"<2@thyme>"}
@@ -911,6 +933,7 @@ def make_flag(duplicate: str, original: str, day: int = 1, score: float = 95.0) 
         duplicate_message_id=duplicate,
         original_message_id=original,
         subject="s",
+        original_subject="s",
         from_address="a@enron.com",
         duplicate_date=T0 + timedelta(days=day),
         original_date=T0,
@@ -1022,7 +1045,7 @@ def test_report_is_sorted_by_original_then_duplicate_date(tmp_path):
     late = T0 + timedelta(days=10)
 
     def f(dup, orig, orig_date, dup_day):
-        return DuplicateFlag(dup, orig, "s", "a@enron.com", T0 + timedelta(days=dup_day), orig_date, 95.0)
+        return DuplicateFlag(dup, orig, "s", "s", "a@enron.com", T0 + timedelta(days=dup_day), orig_date, 95.0)
 
     flags = [
         f("<d-b2>", "<o-b>", late, 30),
@@ -1037,7 +1060,7 @@ def test_report_is_sorted_by_original_then_duplicate_date(tmp_path):
 
 def test_report_keeps_a_group_together_when_originals_share_a_date(tmp_path):
     def f(dup, orig, dup_day):
-        return DuplicateFlag(dup, orig, "s", "a@enron.com", T0 + timedelta(days=dup_day), T0, 95.0)
+        return DuplicateFlag(dup, orig, "s", "s", "a@enron.com", T0 + timedelta(days=dup_day), T0, 95.0)
 
     flags = [f("<d1>", "<o-b>", 1), f("<d2>", "<o-a>", 2), f("<d3>", "<o-b>", 3), f("<d4>", "<o-a>", 4)]
     path = tmp_path / "r.csv"
@@ -1047,7 +1070,7 @@ def test_report_keeps_a_group_together_when_originals_share_a_date(tmp_path):
 
 def test_report_survives_commas_quotes_and_newlines_in_the_subject(tmp_path):
     awkward = 'Budget, "final"\nversion'
-    flag = DuplicateFlag("<d>", "<o>", awkward, "a@enron.com", T0 + timedelta(days=1), T0, 95.0)
+    flag = DuplicateFlag("<d>", "<o>", awkward, "plain", "a@enron.com", T0 + timedelta(days=1), T0, 95.0)
     path = tmp_path / "r.csv"
     dedup.write_report([flag], path)
     assert read_report(path)[1][2] == awkward

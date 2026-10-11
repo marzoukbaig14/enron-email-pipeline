@@ -1,4 +1,4 @@
-"""Tests for notify.py and the notification stage in main.py (behavior: D-022).
+"""Tests for notify.py and the notification stage in main.py (D-022, amended by D-024).
 
 Layout of this file:
 - Rendering: the body is checked character for character against the template
@@ -66,11 +66,14 @@ def make_flag(
     score=97.5,
     duplicate_date=DUPLICATE_DATE,
     original_date=ORIGINAL_DATE,
+    original_subject=None,
 ) -> DuplicateFlag:
+    """A flag. `subject` is the flagged email's; `original_subject` defaults to the same."""
     return DuplicateFlag(
         duplicate_message_id=f"<dup{n}@thyme>",
         original_message_id=original,
         subject=subject,
+        original_subject=subject if original_subject is None else original_subject,
         from_address=sender,
         duplicate_date=duplicate_date,
         original_date=original_date,
@@ -108,7 +111,7 @@ def fill(template_lines: list[str], flag: DuplicateFlag) -> list[str]:
     """Replace the spec's <placeholders> with the values for `flag`."""
     values = {
         "<sender_of_latest_duplicate>": flag.from_address,
-        "<original_subject>": flag.subject,
+        "<original_subject>": flag.original_subject,
         "<message_id_of_latest_duplicate>": flag.duplicate_message_id,
         "<date_of_latest_duplicate>": "2001-05-14T23:39:00Z",
         "<subject>": flag.subject,
@@ -194,10 +197,46 @@ def test_subject_has_the_notice_prefix_then_re_then_the_subject():
     assert message.subject == "[Duplicate Notice] Re: Q2 numbers"
 
 
-def test_subject_keeps_an_existing_re_prefix_as_written():
-    # The template says "Re: <original_subject>"; the subject is not cleaned up.
-    message = render_notification(make_flag(subject="Re: Q2 numbers"), NOW)
-    assert message.subject == "[Duplicate Notice] Re: Re: Q2 numbers"
+@pytest.mark.parametrize(
+    "original, expected",
+    [
+        ("X", "[Duplicate Notice] Re: X"),
+        ("Re: X", "[Duplicate Notice] Re: X"),  # no second "Re:" (D-024 item 1)
+        ("RE: X", "[Duplicate Notice] RE: X"),  # any case, kept as written
+        ("re: X", "[Duplicate Notice] re: X"),
+        ("  Re: X", "[Duplicate Notice] Re: X"),  # leading spaces ignored
+        ("Re:X", "[Duplicate Notice] Re:X"),
+        ("Re: Re: X", "[Duplicate Notice] Re: Re: X"),  # nothing is added or removed
+        ("Regarding X", "[Duplicate Notice] Re: Regarding X"),  # starts with "re", not "re:"
+        ("Real estate", "[Duplicate Notice] Re: Real estate"),
+        ("Fwd: X", "[Duplicate Notice] Re: Fwd: X"),
+        ("", "[Duplicate Notice] Re: "),
+    ],
+)
+def test_subject_is_the_original_subject_with_one_re(original, expected):
+    assert render_notification(make_flag(original_subject=original), NOW).subject == expected
+
+
+def test_subject_comes_from_the_original_not_from_the_flagged_email():
+    # The flagged email is a "Re: ..." reply of the original; the notice must not say "Re: Re:".
+    flag = make_flag(subject="Re: Q2 numbers", original_subject="Q2 numbers")
+    assert render_notification(flag, NOW).subject == "[Duplicate Notice] Re: Q2 numbers"
+    other = make_flag(subject="Q2 numbers", original_subject="Budget draft")
+    assert render_notification(other, NOW).subject == "[Duplicate Notice] Re: Budget draft"
+
+
+def test_the_body_subject_line_stays_the_flagged_emails_own_subject():
+    flag = make_flag(subject="Re: Q2 numbers", original_subject="Q2 numbers")
+    body = render_notification(flag, NOW).body
+    assert "Your Email (Flagged):\n\nMessage-ID: <dup1@thyme>\n\nDate Sent: 2001-05-14T23:39:00Z\n\nSubject: Re: Q2 numbers\n\n" in body
+    assert "Subject: Q2 numbers" not in body.replace("Subject: Re: Q2 numbers", "")
+
+
+def test_a_draft_subject_uses_the_original_subject(tmp_path):
+    flag = make_flag(subject="Re: Q2 numbers", original_subject="Q2 numbers")
+    send_notifications([flag], DryRunSender(tmp_path), now=NOW)
+    [draft] = tmp_path.glob("*.eml")
+    assert read_draft(draft)["Subject"] == "[Duplicate Notice] Re: Q2 numbers"
 
 
 def test_blank_subject_still_renders():
@@ -235,7 +274,7 @@ def test_non_utc_dates_are_shown_as_utc():
 
 
 def test_a_newline_in_the_subject_cannot_break_the_header():
-    message = render_notification(make_flag(subject="two\r\nlines"), NOW)
+    message = render_notification(make_flag(original_subject="two\r\nlines"), NOW)
     assert "\n" not in message.subject and "\r" not in message.subject
 
 
@@ -261,6 +300,7 @@ def test_drafts_are_named_n_underscore_sanitized_message_id(tmp_path):
             duplicate_message_id="<1398971.1075845390651.JavaMail.evans@thyme>",
             original_message_id="<orig@thyme>",
             subject="s",
+            original_subject="s",
             from_address=SENDER,
             duplicate_date=DUPLICATE_DATE,
             original_date=ORIGINAL_DATE,
@@ -279,6 +319,7 @@ def test_unsafe_characters_in_a_message_id_never_reach_the_file_name(tmp_path):
         duplicate_message_id="<a b/c\\d:e*f?g\"h|i@x>",
         original_message_id="<o@x>",
         subject="s",
+        original_subject="s",
         from_address=SENDER,
         duplicate_date=DUPLICATE_DATE,
         original_date=ORIGINAL_DATE,
@@ -463,10 +504,11 @@ def test_the_mcp_sender_keeps_the_notify_to_it_was_given():
     assert McpSender(" me@gmail.com ").notify_to == "me@gmail.com"
 
 
-def test_the_mcp_sender_is_a_stub_until_mcp_is_configured():
+def test_creating_the_mcp_sender_starts_nothing():
+    # The connection opens on the first send, so building the sender (which
+    # main does before any work) neither spawns a server nor needs Node.
     sender = McpSender("me@gmail.com")
-    with pytest.raises(NotImplementedError, match="configure MCP first"):
-        sender.send(render_notification(make_flag(), NOW))
+    sender.close()  # closing a sender that never connected is a no-op
 
 
 class FakeSender:
@@ -623,6 +665,40 @@ def test_send_log_is_rewritten_not_appended(tmp_path):
     write_send_log(send_notifications([make_flag(3)], FakeSender(), now=NOW), path)
     _, rows = read_log(path)
     assert len(rows) == 1
+
+
+def test_append_adds_rows_after_the_existing_ones_with_one_header(tmp_path):
+    path = tmp_path / "send_log.csv"
+    write_send_log(send_notifications([make_flag(1), make_flag(2)], FakeSender(), now=NOW), path, append=True)
+    first_bytes = path.read_bytes()
+    write_send_log(send_notifications([make_flag(3)], FakeSender(fail_for={"<dup3@thyme>"}), now=NOW), path, append=True)
+    columns, rows = read_log(path)
+    assert columns == LOG_COLUMNS
+    assert [r["status"] for r in rows] == ["sent", "sent", "failed"]
+    assert path.read_bytes().startswith(first_bytes)  # earlier rows are untouched
+    assert path.read_text().count("timestamp,recipient") == 1
+
+
+def test_append_to_a_missing_file_creates_it_with_the_header(tmp_path):
+    path = tmp_path / "output" / "send_log.csv"  # folder does not exist yet
+    write_send_log([], path, append=True)
+    assert path.read_text().strip() == ",".join(LOG_COLUMNS)
+
+
+def test_append_to_an_empty_existing_file_still_writes_the_header(tmp_path):
+    path = tmp_path / "send_log.csv"
+    path.write_text("")
+    write_send_log(send_notifications([make_flag(1)], FakeSender(), now=NOW), path, append=True)
+    columns, rows = read_log(path)
+    assert columns == LOG_COLUMNS and len(rows) == 1
+
+
+def test_appending_nothing_leaves_an_existing_log_unchanged(tmp_path):
+    path = tmp_path / "send_log.csv"
+    write_send_log(send_notifications([make_flag(1)], FakeSender(), now=NOW), path, append=True)
+    before = path.read_bytes()
+    write_send_log([], path, append=True)
+    assert path.read_bytes() == before
 
 
 def test_send_log_timestamps_are_utc_iso_text(tmp_path):
@@ -838,3 +914,27 @@ def test_the_stage_with_no_flags_writes_an_empty_log_and_sends_nothing(conn, tmp
     assert stage(conn, [], sender, tmp_path, live=True) == []
     assert sender.messages == []
     assert (tmp_path / "send_log.csv").read_text().strip() == ",".join(LOG_COLUMNS)
+
+
+# --- the stage and the two logs (D-024 item 7) -----------------------------------------------------
+
+
+def test_a_live_stage_appends_to_its_log_across_runs(conn, tmp_path):
+    flags = group_of("<a@thyme>", [1, 2])
+    seed(conn, flags)
+    stage(conn, flags, FakeSender(deliver_to="me@gmail.com"), tmp_path, live=True)
+    stage(conn, flags, FakeSender(deliver_to="me@gmail.com", fail_for={"<dup2@thyme>"}), tmp_path, live=True)
+    columns, rows = read_log(tmp_path / "send_log.csv")
+    assert columns == LOG_COLUMNS
+    # One send per run (the group's latest duplicate), and the second run adds to the first.
+    assert [r["status"] for r in rows] == ["sent", "failed"]
+    assert (tmp_path / "send_log.csv").read_text().count("timestamp,recipient") == 1
+
+
+def test_a_dry_stage_rewrites_its_log_each_run(conn, tmp_path):
+    flags = group_of("<a@thyme>", [1, 2, 3])
+    seed(conn, flags)
+    stage(conn, flags, DryRunSender(tmp_path / "replies"), tmp_path)
+    stage(conn, flags[:1], DryRunSender(tmp_path / "replies"), tmp_path)
+    _, rows = read_log(tmp_path / "send_log.csv")
+    assert [r["status"] for r in rows] == ["dry_run"]

@@ -6,9 +6,11 @@ parser is injected, so these tests never touch the dataset and do not depend
 on parse_body's behavior. One test runs the real parse_body, only to prove it
 is the default.
 
-After ingest, main runs dedup and then notify (D-021, D-022). By default
-notify is a dry run that writes drafts. --send-live needs NOTIFY_TO, and the
-real MCP sender is still a stub, so live tests swap in a fake McpSender.
+After ingest, main runs dedup and then notify (D-021, D-022, D-024). By
+default notify is a dry run that writes drafts and logs them to
+send_log_dry_run.csv. --send-live needs NOTIFY_TO and logs real attempts to
+send_log.csv (appending). The real McpSender would launch a Gmail MCP server,
+so every live test here swaps in a fake McpSender.
 """
 import csv
 import email
@@ -311,7 +313,11 @@ class FakeMcp:
     def __init__(self, notify_to):
         self.notify_to = notify_to
         self.messages = []
+        self.closed = 0
         FakeMcp.instances.append(self)
+
+    def close(self):
+        self.closed += 1
 
     def send(self, message):
         self.messages.append(message)
@@ -384,8 +390,10 @@ def test_the_default_run_is_a_dry_run_with_one_draft_per_flagged_duplicate(
     assert [m["To"] for m in parsed] == [
         "phillip.allen@enron.com", "phillip.allen@enron.com", "jane.doe@enron.com"
     ]
-    rows = read_csv(dup_settings.output_dir / "send_log.csv")
+    rows = read_csv(dup_settings.output_dir / "send_log_dry_run.csv")
     assert [r["status"] for r in rows] == ["dry_run"] * 3
+    # send_log.csv is the log of live sends only (D-024), so a dry run does not create it.
+    assert not (dup_settings.output_dir / "send_log.csv").exists()
     # A dry run never marks anything as notified.
     assert all(sent == 0 and date is None for _, sent, date in email_state(dup_settings.db_path).values())
     assert "dry run" in capsys.readouterr().out.lower()
@@ -401,7 +409,7 @@ def test_a_second_dry_run_replaces_the_drafts_of_the_first(dup_settings, monkeyp
     main_module.run_pipeline(strict, body_parser=FakeBodyParser())
 
     assert list((dup_settings.output_dir / "replies").glob("*.eml")) == []
-    assert read_csv(dup_settings.output_dir / "send_log.csv") == []
+    assert read_csv(dup_settings.output_dir / "send_log_dry_run.csv") == []
 
 
 def test_live_run_sends_the_latest_duplicate_of_each_group_to_notify_to(
@@ -461,18 +469,90 @@ def test_live_mode_refuses_to_start_without_notify_to(
     assert not dup_settings.output_dir.exists()
 
 
-def test_the_stub_mcp_sender_fails_every_send_and_the_run_still_finishes(
+class FailingMcp(FakeMcp):
+    """A live sender whose every send fails, the way a broken MCP session does."""
+
+    def send(self, message):
+        self.messages.append(message)
+        return SendResult(
+            timestamp=message.date,
+            recipient=self.notify_to,
+            subject=message.subject,
+            status=SendStatus.FAILED,
+            error="MCP session lost: BrokenPipeError: gone",
+            duplicate_message_id=message.references,
+        )
+
+
+def test_a_failing_live_sender_is_logged_and_the_run_still_finishes(
     dup_settings, monkeypatch, capsys
 ):
-    monkeypatch.setenv("NOTIFY_TO", NOTIFY_TO)  # the real McpSender, still a stub
+    FailingMcp.instances = []
+    monkeypatch.setattr(notify, "McpSender", FailingMcp)
+    monkeypatch.setenv("NOTIFY_TO", NOTIFY_TO)
 
     assert run_cli(dup_settings, monkeypatch, "--send-live") == 0
 
     rows = read_csv(dup_settings.output_dir / "send_log.csv")
     assert [r["status"] for r in rows] == ["failed", "failed"]
-    assert all(r["error"] == "NotImplementedError: configure MCP first" for r in rows)
+    assert all(r["error"] == "MCP session lost: BrokenPipeError: gone" for r in rows)
     assert all(sent == 0 for _, sent, _ in email_state(dup_settings.db_path).values())
-    assert "configure MCP first" in capsys.readouterr().out
+    assert "MCP session lost" in capsys.readouterr().out
+
+
+def test_the_live_sender_is_closed_when_the_run_ends(dup_settings, monkeypatch, fake_mcp):
+    assert run_cli(dup_settings, monkeypatch, "--send-live") == 0
+    [sender] = fake_mcp.instances
+    assert sender.closed == 1
+
+
+def test_the_live_sender_is_closed_even_when_the_pipeline_fails(dup_settings, monkeypatch, fake_mcp, capsys):
+    missing = dup_settings.maildir.parent / "no-such-maildir"
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--maildir", str(missing)) == 1
+    [sender] = fake_mcp.instances
+    assert sender.closed == 1
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_the_live_sender_is_closed_even_on_an_unexpected_crash(dup_settings, monkeypatch, fake_mcp):
+    def boom(*args, **kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(main_module, "run_pipeline", boom)
+    with pytest.raises(RuntimeError):
+        run_cli(dup_settings, monkeypatch, "--send-live")
+    assert fake_mcp.instances[0].closed == 1
+
+
+def test_a_dry_run_after_a_live_run_leaves_the_live_log_alone(dup_settings, monkeypatch, fake_mcp):
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--limit", "1") == 0
+    live_log = (dup_settings.output_dir / "send_log.csv").read_bytes()
+    assert [r["status"] for r in read_csv(dup_settings.output_dir / "send_log.csv")] == ["sent"]
+
+    assert run_cli(dup_settings, monkeypatch) == 0  # dry run
+
+    assert (dup_settings.output_dir / "send_log.csv").read_bytes() == live_log
+    assert [r["status"] for r in read_csv(dup_settings.output_dir / "send_log_dry_run.csv")] == ["dry_run"] * 3
+
+
+def test_live_runs_append_to_the_live_log(dup_settings, monkeypatch, fake_mcp):
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--limit", "1") == 0
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--limit", "2") == 0
+    rows = read_csv(dup_settings.output_dir / "send_log.csv")
+    assert [r["status"] for r in rows] == ["sent"] * 3  # 1 from the first run, 2 from the second
+    assert (dup_settings.output_dir / "send_log.csv").read_text().count("timestamp,recipient") == 1
+
+
+def test_the_final_sequence_dry_run_then_live(dup_settings, monkeypatch, fake_mcp, capsys):
+    # What the delivery does: a dry run for the drafts, then a limited live send.
+    assert run_cli(dup_settings, monkeypatch) == 0
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--limit", "1") == 0
+
+    assert len(list((dup_settings.output_dir / "replies").glob("*.eml"))) == 3  # live run keeps the drafts
+    live = read_csv(dup_settings.output_dir / "send_log.csv")
+    assert [(r["recipient"], r["status"]) for r in live] == [(NOTIFY_TO, "sent")]
+    assert len(read_csv(dup_settings.output_dir / "send_log_dry_run.csv")) == 3
+    assert "send_log.csv" in capsys.readouterr().out
 
 
 def test_a_negative_limit_is_a_usage_error():

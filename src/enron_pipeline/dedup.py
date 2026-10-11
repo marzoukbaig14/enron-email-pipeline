@@ -267,6 +267,7 @@ def _flag_block(
                         duplicate_message_id=candidate.message_id,
                         original_message_id=original.message_id,
                         subject=candidate.subject,
+                        original_subject=original.subject,
                         from_address=candidate.from_address,
                         duplicate_date=candidate.date,
                         original_date=original.date,

@@ -4,8 +4,9 @@ Order (docs/plans/module-layout.md): init db -> ingest -> dedup -> notify.
 By default notify is a dry run that writes one .eml draft per flagged
 duplicate. With --send-live it sends one email per duplicate group, to the
 address in the NOTIFY_TO environment variable (D-022); live mode refuses to
-start without it. The live sender is still a stub that raises until the Gmail
-MCP server is configured.
+start without it. The live sender launches the Gmail MCP server through the official mcp client
+and is closed when the run ends (D-024). Live attempts are appended to
+output/send_log.csv; dry-run attempts go to output/send_log_dry_run.csv.
 
 This file only wires modules together. Parsing, SQL and notification
 rendering live in the package.
@@ -106,14 +107,15 @@ def run_notifications(
     """The notify stage: choose flags, send, log every attempt, record successes.
 
     Dry run: every flag gets a draft. Live: only the latest duplicate of each
-    group, at most `limit` of them. Every attempt goes to `send_log`. A
-    successful live send (status SENT) sets notification_sent and
-    notification_date on the flagged email. Dry runs and failures never do
-    (D-022 items 7 to 9).
+    group, at most `limit` of them. Every attempt goes to `send_log`: a live run
+    appends to it, a dry run rewrites it (D-024 item 7; the caller gives the two
+    modes different files). A successful live send (status SENT) sets
+    notification_sent and notification_date on the flagged email. Dry runs and
+    failures never do (D-022 items 8 and 9).
     """
     chosen = notify.select_live_flags(flags, limit) if live else list(flags)
     results = notify.send_notifications(chosen, sender)
-    notify.write_send_log(results, send_log)
+    notify.write_send_log(results, send_log, append=live)
     for result in results:
         if result.status is SendStatus.SENT:
             db.mark_notified(conn, result.duplicate_message_id, result.timestamp)
@@ -169,7 +171,7 @@ def run_pipeline(
             sender,
             live=settings.send_live,
             limit=settings.limit,
-            send_log=settings.output_dir / "send_log.csv",
+            send_log=send_log_path(settings),
         )
         _print_notification_summary(results, settings)
     finally:
@@ -177,9 +179,15 @@ def run_pipeline(
     return stats
 
 
+def send_log_path(settings: Settings) -> Path:
+    """send_log.csv is the log of live sends only; a dry run has its own file (D-024)."""
+    name = "send_log.csv" if settings.send_live else "send_log_dry_run.csv"
+    return settings.output_dir / name
+
+
 def _print_notification_summary(results: Sequence[SendResult], settings: Settings) -> None:
     counts = Counter(result.status for result in results)
-    log = settings.output_dir / "send_log.csv"
+    log = send_log_path(settings)
     if not settings.send_live:
         drafts = settings.output_dir / "replies"
         print(f"\nNotifications (dry run): {counts[SendStatus.DRY_RUN]} draft(s) in {drafts}, "
@@ -209,6 +217,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except FileNotFoundError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+    finally:
+        if sender is not None:
+            sender.close()  # stops the MCP server and its background thread
     return 0
 
 

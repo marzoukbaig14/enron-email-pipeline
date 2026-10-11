@@ -19,7 +19,7 @@ Contents (dataclasses, two enums and one exception, no logic beyond checking val
 | `EmailRecord` | One row of `emails` plus its recipients (section 2). `recipients` is a tuple; a list is converted, a non-`Recipient` item raises `TypeError`. |
 | `ParseFailure(source_file, reason, failed_at)` | One row of `parse_failures`. |
 | `ParseError(Exception)` | Raised by parsers with a short, stable `reason` string. |
-| `DuplicateFlag` | One flagged duplicate. Same fields as a `duplicates_report.csv` row. Produced by dedup, consumed by notify. |
+| `DuplicateFlag` | One flagged duplicate: a `duplicates_report.csv` row plus a required `original_subject` (D-024; not a report column). `subject` is the flagged email's own subject, `original_subject` the original's. Produced by dedup, consumed by notify. |
 | `SendResult` | Outcome of one send attempt. Same fields as a `send_log.csv` row, plus `duplicate_message_id`. `status` is a `SendStatus`, validated like `Recipient.kind`. Produced by notify, consumed by db. |
 
 Must NOT: read files, touch the DB, import any other package module, or do validation beyond what dataclass construction gives.
@@ -223,29 +223,55 @@ class Sender(Protocol):
 
 class DryRunSender:                  # D-022 item 1
     def __init__(self, output_dir: Path) -> None
-class McpSender:                     # D-022 item 3; the MCP call itself is still a stub
-    def __init__(self, notify_to: str | None) -> None
+class McpSender:                     # D-022 item 3, D-024 items 3 to 6
+    def __init__(self, notify_to: str | None, *, connect=None, command="npx",
+                 args=("-y", "@gongrzhe/server-gmail-autoauth-mcp"), call_timeout_seconds=60.0) -> None
+    def send(self, message: OutgoingEmail) -> SendResult      # never raises
+    def close(self) -> None                                   # also a context manager
 
 def render_notification(flag: DuplicateFlag, now: datetime) -> OutgoingEmail
+def notice_subject(original_subject: str) -> str              # D-024 item 1
+def live_body(message: OutgoingEmail) -> str                    # D-024 item 5
 def select_live_flags(flags: Sequence[DuplicateFlag], limit: int) -> list[DuplicateFlag]
 def send_notifications(
     flags: Sequence[DuplicateFlag],
     sender: Sender,
     now: datetime | None = None,
 ) -> list[SendResult]
-def write_send_log(results: Sequence[SendResult], path: Path) -> None   # send_log.csv
+def write_send_log(results: Sequence[SendResult], path: Path, *, append: bool = False) -> None
 ```
 
-Behavior is fixed by D-022.
+Behavior is fixed by D-022, amended by D-024.
 
-- `render_notification` fills the spec's section 4.2 template. `OutgoingEmail.to` is the sender of the flagged duplicate (the template's To line). The subject is `"[Duplicate Notice] Re: " + flag.subject` with newlines removed, and `references` is the flagged message id. The body is the 13 template lines separated by one blank line each, as the spec shows them. Dates in the body are ISO 8601 UTC (`2001-05-14T23:39:00Z`), and the score has two decimals and a `%`. `DuplicateFlag` carries one subject, the flagged email's, so it fills both the Subject header and the body's `Subject:` line.
+- `render_notification` fills the spec's section 4.2 template. `OutgoingEmail.to` is the sender of the flagged duplicate (the template's To line). The subject is `notice_subject(flag.original_subject)`: `"[Duplicate Notice] Re: "` plus the ORIGINAL email's subject, with no second `Re:` if it already starts with one (any case), newlines removed (D-024; the body's "Subject:" line under "Your Email (Flagged)" stays the flagged email's own), and `references` is the flagged message id. The body is the 13 template lines separated by one blank line each, as the spec shows them. Dates in the body are ISO 8601 UTC (`2001-05-14T23:39:00Z`), and the score has two decimals and a `%`. `DuplicateFlag` carries one subject, the flagged email's, so it fills both the Subject header and the body's `Subject:` line.
 - `select_live_flags` returns the latest duplicate (by `duplicate_date`, ties by message id) of each group (flags sharing `original_message_id`). Groups come in `duplicates_report.csv` order and the first `limit` are kept. A negative limit raises `ValueError`.
 - `send_notifications` catches exceptions while rendering or sending, per message, and records them as `status=SendStatus.FAILED` with `"<ExceptionType>: <message>"`. It never raises. Without `now`, each message is stamped with the current UTC time in whole seconds.
-- `write_send_log` writes `timestamp, recipient, subject, status, error`, one row per attempt (dry run or live), rewriting the file each run.
+- `write_send_log` writes `timestamp, recipient, subject, status, error`, one row per attempt. By default it rewrites the file; with `append=True` it adds rows after the existing ones and writes the header only for a new or empty file. Live runs append, dry runs rewrite (D-024 item 7).
 - `DryRunSender` creates its folder and deletes earlier drafts (only files named `<digits>_*.eml`), then writes `<n>_<sanitized message id>.eml` per message, n from 1, zero-padded to 4 digits. Each draft is a plain-text RFC 822 message with To, Subject, Date and References headers. Its results have status `DRY_RUN`, the Enron sender as `recipient`, and the message's Date as `timestamp`.
-- `McpSender(notify_to)` raises `ValueError` mentioning `NOTIFY_TO` if the address is missing or has no `@`: that is how live mode refuses to start. Every live email is delivered to `notify_to`, while the message keeps the Enron sender in `to`. `send` raises `NotImplementedError("configure MCP first")` until the MCP connection is built, so every live send is currently logged as failed.
+- `McpSender(notify_to)` raises `ValueError` mentioning `NOTIFY_TO` if the address is missing or has no `@`: that is how live mode refuses to start. Every live email is delivered to `notify_to`, while the body keeps the Enron sender in its To line. It is a real MCP client, described in the next subsection.
 
 *Added by D-022: `DryRunSender` and `McpSender` were skeletons with no constructor arguments (McpSender) and a stub `send` (DryRunSender). `select_live_flags` is new. `send_notifications` also catches rendering errors, not only send errors.*
+
+#### The live sender (D-024)
+
+`McpSender` is an MCP client using the official `mcp` SDK over stdio. It launches `npx -y @gongrzhe/server-gmail-autoauth-mcp` and calls the server's `send_email` tool. The SDK is async and `Sender.send` is not, so the session lives in an event loop on a background thread (anyio's blocking portal) and `send` waits for each call.
+
+- **One session per run.** It opens on the first send (so a refused or zero-send run starts no process), is reused for every message, and is closed by `close()` or the end of a `with` block. `main` closes it in a `finally`.
+- **Arguments come from the server, not from memory.** `scripts/list_mcp_tools.py` connects, calls `list_tools()` and prints each tool's schema (it sends nothing). The `send_email` schema it printed:
+
+| Property | Type | Required | We send |
+|---|---|---|---|
+| `to` | array of string | yes | `[NOTIFY_TO]` |
+| `subject` | string | yes | the notice subject |
+| `body` | string | yes | `live_body(message)` |
+| `mimeType` | `text/plain`, `text/html` or `multipart/alternative` (default `text/plain`) | no | `"text/plain"` |
+| `inReplyTo` | string, "Message ID being replied to" | no | the flagged email's message id |
+| `htmlBody`, `cc`, `bcc`, `threadId`, `attachments` | | no | not used |
+
+  The schema sets `additionalProperties: false`, so any other key is rejected, and there is no free-form headers field.
+- **References.** There is no way to set a `References` header directly. `inReplyTo` is passed instead, which is the closest thing the tool offers (how the server renders it as a header is not verified; check the first live email). The spec's `References: <message id>` line is also kept in the body: `live_body` puts the template's four header lines (To, Subject, Date, References) at the top, then a blank line, then the notification text.
+- **Failures never raise into the pipeline.** A tool error (`is_error`), an `MCPError` or a 60-second timeout fails that one message and the session carries on. Any other failure, including a server that cannot start, loses the session: that message and all later ones fail with the reason, with no reconnect and no retry, so a broken setup cannot start a subprocess per email.
+- **Result.** `SENT` or `FAILED`, `recipient = notify_to`, `timestamp` = the message's Date, `error` = a short reason (`"send_email failed: ..."`, `"MCP error: ..."`, `"timed out after 60s ..."`, `"MCP session lost: <Type>: <message>"`, `"could not start MCP server: ..."`).
 
 Inputs: `DuplicateFlag` list and a `Sender`. It never gets a DB connection or settings.
 Must NOT: touch the DB, import dedup, decide dry-run vs live (the caller passes the sender), hold credentials.
@@ -292,11 +318,11 @@ def main(argv: Sequence[str] | None = None) -> int
 ```
 
 - `settings_from_args` starts from `default_settings()` and applies the flags. `--output-dir` also moves the database to `<output-dir>/enron.db` unless `--db` is given. The error log and `duplicates_report.csv` stay at the repo root (`Settings.error_log`, `Settings.duplicates_report`) whatever `--output-dir` says. `--mailboxes` replaces the D-013 list. `--limit N` (default 10, must not be negative) caps live sends only.
-- `run_notifications` is the notify stage, kept in `main.py` because it ties `notify` to the database and `notify` never touches the DB. Dry run: every flag gets a draft. Live: `notify.select_live_flags(flags, limit)` first. Either way it calls `notify.send_notifications`, writes `send_log.csv`, and calls `db.mark_notified` for each result with status `SENT` (D-022 items 7 to 9). Dry runs and failures never mark anything.
-- `run_pipeline` is the pipeline sequence, kept apart from argument parsing so tests can call it with a `Settings`, a fake `body_parser` and a fake `sender`. It creates the output folder and rebuilds the database (`db.init_schema`). Then ingest (writes `extraction_stats.json`, prints `format_stats`), dedup (`mark_storage_copies`, `flag_duplicates` with `settings.similarity_threshold`, `summarize`, `write_report`, `output/dedup_stats.json`, prints the stats), and notify (`DryRunSender(output/replies)` unless live, then `run_notifications`, then a one-line summary). It raises `FileNotFoundError` for a missing maildir or mailbox, and `ValueError` if `send_live` is set with no `sender`.
-- `main` reads `NOTIFY_TO` from the environment, only in live mode, and builds `notify.McpSender` **before any work starts**, so a missing or unusable address stops the run with `error: NOTIFY_TO ...` on stderr and exit code 1, with nothing ingested or written. It also turns `FileNotFoundError` into a one-line `error: ...` and exit code 1. Success returns 0, including a live run in which some sends failed (they are in `send_log.csv` and the console summary).
+- `run_notifications` is the notify stage, kept in `main.py` because it ties `notify` to the database and `notify` never touches the DB. Dry run: every flag gets a draft. Live: `notify.select_live_flags(flags, limit)` first. Either way it calls `notify.send_notifications`, writes the log it is given (a live run appends, a dry run rewrites), and calls `db.mark_notified` for each result with status `SENT` (D-022 items 8 and 9, D-024 item 7). Dry runs and failures never mark anything.
+- `run_pipeline` is the pipeline sequence, kept apart from argument parsing so tests can call it with a `Settings`, a fake `body_parser` and a fake `sender`. It creates the output folder and rebuilds the database (`db.init_schema`). Then ingest (writes `extraction_stats.json`, prints `format_stats`), dedup (`mark_storage_copies`, `flag_duplicates` with `settings.similarity_threshold`, `summarize`, `write_report`, `output/dedup_stats.json`, prints the stats), and notify (`DryRunSender(output/replies)` unless live, then `run_notifications`, then a one-line summary). The log is `output/send_log.csv` in live mode and `output/send_log_dry_run.csv` in a dry run (`send_log_path`; D-024 item 7). It raises `FileNotFoundError` for a missing maildir or mailbox, and `ValueError` if `send_live` is set with no `sender`.
+- `main` reads `NOTIFY_TO` from the environment, only in live mode, and builds `notify.McpSender` **before any work starts**, so a missing or unusable address stops the run with `error: NOTIFY_TO ...` on stderr and exit code 1, with nothing ingested or written. It closes the sender in a `finally` when the run ends, however it ends. It also turns `FileNotFoundError` into a one-line `error: ...` and exit code 1. Success returns 0, including a live run in which some sends failed (they are in `send_log.csv` and the console summary).
 
-Without `--send-live` nothing is ever sent. The live sender is a stub until the MCP server is configured.
+Without `--send-live` nothing is ever sent. `send_log.csv` is the log of live sends only (it is the spec's deliverable of that name); dry-run attempts go to `send_log_dry_run.csv`.
 
 Must NOT: contain parsing, SQL, or notification-rendering logic.
 
@@ -365,9 +391,9 @@ class Sender(Protocol):
 | Implementation | Behavior |
 |---|---|
 | `DryRunSender(output_dir: Path)` | Writes one `.eml` per message into `output_dir` (`output/replies/`). Returns `status=SendStatus.DRY_RUN`. Sends nothing. |
-| `McpSender(notify_to: str)` | Sends via the Gmail MCP server's `send_email` tool to `notify_to` (the `NOTIFY_TO` address; D-022 item 3), while the message keeps the Enron sender in its To line. Returns `SendStatus.SENT` with `recipient=notify_to`, or `SendStatus.FAILED` with the error text. **Stub:** `send` raises `NotImplementedError("configure MCP first")`. How it reaches MCP is decided at the notifier (D-014 item 6). |
+| `McpSender(notify_to: str)` | Sends via the Gmail MCP server's `send_email` tool to `notify_to` (the `NOTIFY_TO` address; D-022 item 3), while the message keeps the Enron sender in its To line. Returns `SendStatus.SENT` with `recipient=notify_to`, or `SendStatus.FAILED` with the error text, and never raises. One MCP session for the whole run (D-024). |
 
-Both implementations live in `notify.py` for now. If the live sender grows, splitting it into its own module would be a structural change, so I would ask first.
+Both implementations live in `notify.py` for now. `McpSender` is now a few hundred lines with the MCP libraries (`mcp`, `anyio`) imported at the top of `notify.py`; splitting the live sender into its own module would be a structural change, so it is left for you to decide.
 
 ## 4. Data flow
 
@@ -389,7 +415,7 @@ data/maildir/<mailbox>/<folder>/<file>
    dedup.mark_storage_copies / flag_duplicates   (reads and updates emails via the connection)
         |                                -> list[DuplicateFlag]
    main.run_notifications: notify.select_live_flags (live only) -> notify.send_notifications(flags, sender) -> list[SendResult]
-        |                                -> output/send_log.csv
+        |                                -> output/send_log.csv (live, appended) or output/send_log_dry_run.csv (dry run)
    db.mark_notified (live SendStatus.SENT results only)
 ```
 
@@ -404,7 +430,9 @@ data/maildir/<mailbox>/<folder>/<file>
 | `duplicates_report.csv` | `dedup.write_report` |
 | Duplicate stats (groups, flagged, average group size) | `dedup.summarize`, printed by `main.py` |
 | `output/replies/*.eml` | `notify.DryRunSender` |
-| `output/send_log.csv` | `notify.write_send_log` (every attempt, dry run and live; rewritten each run) |
+| `output/send_log.csv` | `notify.write_send_log(append=True)` (live attempts only; appended, never rewritten) |
+| `output/send_log_dry_run.csv` | `notify.write_send_log` (dry-run attempts; rewritten each dry run) |
+| `mcp_config.json.example` | repo root, checked by `tests/unit/test_mcp_config_example.py` |
 | `schema.sql` | exists already, loaded by `db.init_schema` |
 
 Not module output, handled separately later: `sample_queries.sql`, `mcp_config.json.example`, README, AI_USAGE.md, requirements.txt.

@@ -109,15 +109,34 @@ def test_duplicate_flag_builds_and_rejects_unknown_field():
     fields = dict(
         duplicate_message_id="<2@enron.com>",
         original_message_id="<1@enron.com>",
+        subject="Re: Hello",
+        original_subject="Hello",
+        from_address="phillip.allen@enron.com",
+        duplicate_date=NOW,
+        original_date=NOW,
+        similarity_score=97.0,
+    )
+    flag = DuplicateFlag(**fields)
+    assert flag.similarity_score == 97.0
+    assert (flag.subject, flag.original_subject) == ("Re: Hello", "Hello")
+    with pytest.raises(TypeError):
+        DuplicateFlag(**fields, extra=1)
+
+
+def test_duplicate_flag_requires_the_original_subject():
+    # D-024: required, so a producer that forgets it fails loudly instead of
+    # sending notices with an empty subject.
+    fields = dict(
+        duplicate_message_id="<2@enron.com>",
+        original_message_id="<1@enron.com>",
         subject="Hello",
         from_address="phillip.allen@enron.com",
         duplicate_date=NOW,
         original_date=NOW,
         similarity_score=97.0,
     )
-    assert DuplicateFlag(**fields).similarity_score == 97.0
-    with pytest.raises(TypeError):
-        DuplicateFlag(**fields, extra=1)
+    with pytest.raises(TypeError, match="original_subject"):
+        DuplicateFlag(**fields)
 
 
 def test_send_result_builds_and_rejects_unknown_field():

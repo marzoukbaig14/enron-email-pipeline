@@ -122,14 +122,18 @@ class ParseFailure:
 
 @dataclass(frozen=True, slots=True)
 class DuplicateFlag:
-    """One flagged duplicate. Same fields as a duplicates_report.csv row.
+    """One flagged duplicate: a duplicates_report.csv row plus original_subject.
 
-    Produced by dedup, consumed by notify.
+    Produced by dedup, consumed by notify. `subject` is the flagged email's own
+    subject; `original_subject` is the original's (D-024), which is what the
+    notice subject is built from. original_subject is required, so a producer
+    that forgets it fails loudly, and it is not a column of the report.
     """
 
     duplicate_message_id: str
     original_message_id: str
     subject: str
+    original_subject: str
     from_address: str
     duplicate_date: datetime
     original_date: datetime

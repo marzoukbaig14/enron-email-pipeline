@@ -428,3 +428,57 @@ daily automated mail at the same minute is still treated as re-sends.
 Consequences: Skewed copies no longer get notices. A true re-send
 exactly 1 to 12 hours later to the minute, with an identical body,
 would be missed. That case is rare and accepted.
+
+## D-024: Notification subject, live MCP sender, send log
+Date: 2026-10-11
+Status: Accepted
+Context: The first notify build used the flagged email's own subject in
+the notice subject, though the spec says the original's. The live sender
+was a stub. send_log.csv was rewritten on every run, so a dry run
+wiped live results, and dry-run rows sat in the file the spec defines as
+the log of live sends.
+Decision: amends D-022 items 5 and 7.
+1. The notice subject uses the ORIGINAL (earliest) email's subject:
+   "[Duplicate Notice] Re: <original subject>". If that subject already
+   starts with "Re:" (any case, leading spaces ignored) no second "Re:"
+   is added and it is kept as written. "X" gives "[Duplicate Notice] Re:
+   X" and "Re: X" gives "[Duplicate Notice] Re: X". The body's Subject
+   line under "Your Email (Flagged)" stays the flagged email's own.
+2. DuplicateFlag gets a required field original_subject, set by dedup.
+   It is not a column of duplicates_report.csv, which keeps the spec's
+   seven columns.
+3. Live sending (McpSender): Python is an MCP client, using the official
+   mcp SDK over stdio. It launches "npx -y @gongrzhe/server-gmail-
+   autoauth-mcp" and calls its send_email tool. The connection opens on
+   the first send, one session for the whole run, and is closed when the
+   run ends. mcp is pinned in requirements.txt.
+4. send_email arguments come from the server's own schema, read with
+   scripts/list_mcp_tools.py. It requires to (array of addresses),
+   subject and body, and allows mimeType, inReplyTo, threadId, cc, bcc,
+   htmlBody and attachments. It rejects anything else (additional
+   properties false), so there is no custom headers field. We send to =
+   [NOTIFY_TO], subject, body, mimeType "text/plain", and inReplyTo = the
+   flagged email's message id. inReplyTo is the closest thing to the
+   spec's References header. How the server renders it is not verified
+   (check the headers of the first live email). The References line is
+   also kept in the body.
+5. The live body starts with the template's header block (To: the real
+   Enron sender, Subject:, Date:, References:), a blank line, then the
+   notification text. The email itself goes to NOTIFY_TO (D-022 item 3).
+6. A send never raises into the pipeline. A tool error, an MCP error or a
+   timeout (60 seconds) fails that one message and the session carries
+   on. Any other failure, including a server that cannot start, loses the
+   session: that message and every later one fail with the reason, and
+   there is no reconnect or retry, so a broken server cannot start a
+   subprocess per email. The result time is the message's Date.
+7. send_log.csv is the log of LIVE attempts only. Live runs append to it
+   (header written once, status sent or failed) and never rewrite it, so
+   a later dry run cannot wipe live results. Dry-run attempts go to
+   output/send_log_dry_run.csv, rewritten each dry run. This replaces the
+   "every attempt in send_log.csv" part of D-022 item 7.
+8. mcp_config.json.example at the repo root shows the server entry with
+   no real paths or secrets.
+Consequences: A notice for "Re: X" no longer reads "Re: Re: X". The live
+log is real evidence and survives later runs. A broken MCP setup costs
+one failed row per notice, not a subprocess each. Live runs accumulate in
+send_log.csv, so delete it before a fresh final run.
