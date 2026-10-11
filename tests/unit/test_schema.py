@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
+SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema.sql"
 
 EMAIL_COLUMNS = {
     "id", "message_id", "date", "date_raw", "from_address", "subject", "body",

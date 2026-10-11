@@ -116,3 +116,52 @@ Note: the final mailbox set, referenced as D-012 in D-011, moves to D-013.
 Consequences: Schema supports the storage-copy collapse step and spec
 dedup without restructuring. Address normalization is a known scale
 limitation.
+
+## D-014: Module layout, independence rules, and test structure
+Date: 2026-10-11
+Status: Accepted
+Context: Pipeline needs extraction, storage, dedup, and notification,
+built test-first, runnable with one command. Modules must be testable in
+isolation.
+Decision:
+1. src layout: src/enron_pipeline/ with pyproject.toml, installed with
+   pip install -e .
+2. One module per responsibility: models, parse_headers, parse_body,
+   discover, db, ingest, dedup, notify, config. main.py at repo root is
+   the CLI; --send-live enables real sends.
+3. Independence: modules share only models.py. Parsers are pure (no
+   file, DB, or config access). Settings are passed as arguments with
+   defaults. dedup receives a DB connection. notify receives a sender
+   object (dry-run or live). Only ingest.py and main.py wire modules
+   together. Nothing imports from scripts/.
+4. Records are dataclasses, so field typos fail loudly.
+5. Tests: tests/unit/ has one file per module with synthetic inputs,
+   written with each module. tests/integration/ comes later with real
+   fixtures.
+6. Build order: models, parse_headers, parse_body, db, discover +
+   ingest, dedup, notify, main. How live sends reach MCP is decided at
+   the notifier.
+Consequences: Each module is buildable and testable before mailbox
+selection. Swapping a module (e.g. similarity metric, sender) doesn't
+touch the others.
+
+## D-015: Stricter models (enums, immutable recipients)
+Date: 2026-10-11
+Status: Accepted
+Context: Python dataclasses don't check types at runtime. A frozen record
+holding a list can still be mutated in place. Typos like kind="To" or
+status="sucess" would pass silently.
+Decision:
+1. RecipientKind(str, Enum) with TO="to", CC="cc", BCC="bcc".
+   SendStatus(str, Enum) with SENT="sent", DRY_RUN="dry_run",
+   FAILED="failed". str-based so values store as plain text in SQLite
+   and work on Python 3.10.
+2. Recipient.kind and SendResult.status use these enums. __post_init__
+   converts a valid string to the enum and raises ValueError on an
+   invalid one. Case-sensitive: "To" is rejected.
+3. EmailRecord.recipients is tuple[Recipient, ...] with default ().
+   __post_init__ converts a list to a tuple and raises TypeError if any
+   item is not a Recipient.
+Consequences: Typos and in-place mutation fail loudly. Modules can pass
+plain strings or enums. Frozen fields set in __post_init__ use
+object.__setattr__.
