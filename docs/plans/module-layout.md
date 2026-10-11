@@ -280,25 +280,38 @@ Must NOT: touch the DB, import dedup, decide dry-run vs live (the caller passes 
 **Responsibility:** the pipeline's default settings in one place.
 
 ```python
+# Named constants (D-025): every default is defined here and nowhere else.
+MAILBOXES = ("ring-a", "ybarbo-p", "presto-k", "baughman-d", "beck-s")   # D-013, Set 1
+MAILDIR, OUTPUT_DIR = Path("data/maildir"), Path("output")
+DB_FILE, EXTRACTION_STATS_FILE, DEDUP_STATS_FILE = "enron.db", "extraction_stats.json", "dedup_stats.json"
+REPLIES_DIR, SEND_LOG_FILE, DRY_RUN_LOG_FILE = "replies", "send_log.csv", "send_log_dry_run.csv"
+ERROR_LOG, DUPLICATES_REPORT = Path("error_log.txt"), Path("duplicates_report.csv")   # repo root: deliverables
+NOTIFY_TO_ENV = "NOTIFY_TO"
+SIMILARITY_THRESHOLD, LIVE_SEND_LIMIT = 90.0, 10     # the spec value; D-022 item 4
+
 @dataclass(frozen=True)
 class Settings:
-    maildir: Path = Path("data/maildir")
-    db_path: Path = Path("output/enron.db")
-    output_dir: Path = Path("output")
-    error_log: Path = Path("error_log.txt")        # repo root: a spec deliverable
-    duplicates_report: Path = Path("duplicates_report.csv")   # repo root (D-021 item 11)
-    mailboxes: tuple[str, ...] | None = MAILBOXES  # D-013; None would mean every mailbox
-    similarity_threshold: float = 90.0
+    maildir: Path = MAILDIR
+    db_path: Path = OUTPUT_DIR / DB_FILE
+    output_dir: Path = OUTPUT_DIR
+    error_log: Path = ERROR_LOG
+    duplicates_report: Path = DUPLICATES_REPORT
+    mailboxes: tuple[str, ...] | None = MAILBOXES  # None would mean every mailbox
+    similarity_threshold: float = SIMILARITY_THRESHOLD
     send_live: bool = False
-    limit: int = 10                                # most emails a live run may send (D-022 item 4)
+    limit: int = LIVE_SEND_LIMIT
+    notify_to: str | None = None                   # filled by main from --notify-to or NOTIFY_TO
 
-MAILBOXES = ("ring-a", "ybarbo-p", "presto-k", "baughman-d", "beck-s")   # D-013, Set 1
+    # derived from output_dir, so no other file knows the names:
+    extraction_stats, dedup_stats, replies_dir     # properties
+    send_log                                       # property: send_log.csv if send_live else send_log_dry_run.csv
+
 def default_settings() -> Settings
 ```
 
-`NOTIFY_TO` is not a setting: it is an address read from the environment by `main.py` only, so `Settings` stays free of anything private.
+*Changed by D-025: the literals that used to sit in `main.py` (output file names, the database name) and the recipient moved here. `notify_to` is the one field that carries something private-ish, and it is only an address the user passes in; the default is `None`.*
 
-Only `main.py` imports it. It reads values and passes them down as plain arguments. The other modules keep their own defaults so they work in isolation.
+Only `main.py` imports it. It reads values, lets command-line options override them, and passes the result down as plain arguments; no other module reads argv or the environment (`tests/unit/test_no_hidden_settings.py` checks this on the parsed code). The other modules keep their own defaults so they work in isolation, and a test keeps dedup's threshold default equal to `SIMILARITY_THRESHOLD`.
 
 Must NOT: import any package module, do I/O, hold secrets.
 
@@ -306,12 +319,16 @@ Must NOT: import any package module, do I/O, hold secrets.
 **Responsibility:** the CLI. One command runs the whole pipeline.
 
 ```
-python main.py [--maildir PATH] [--db PATH] [--output-dir PATH]
-               [--mailboxes A B ...] [--threshold 90] [--send-live] [--limit N]
+python main.py [--maildir PATH] [--mailboxes NAME [NAME ...]] [--output-dir PATH]
+               [--db-path PATH] [--threshold 0-100] [--send-live] [--limit N]
+               [--notify-to ADDRESS]
 ```
+
+Defaults come from `config.py` and are shown in `--help`. `--db` is kept as an older name for `--db-path`. `--notify-to` wins over the `NOTIFY_TO` environment variable; live mode needs one of the two. Checks run before anything is created, wiped or written (D-025): a threshold outside 0 to 100 or a mailbox name that is not a plain folder name is a usage error (exit 2); a missing maildir, a missing mailbox folder or a missing live recipient prints one `error:` line and exits 1. Repeated mailbox names are dropped.
 
 ```python
 def settings_from_args(argv: Sequence[str] | None = None) -> Settings
+def check_inputs(settings: Settings) -> None   # D-025: maildir and every mailbox must exist; raises FileNotFoundError
 def run_notifications(conn, flags, sender, *, live: bool, limit: int, send_log: Path) -> list[SendResult]
 def run_pipeline(settings: Settings, body_parser=parse_body, sender: Sender | None = None) -> ExtractionStats
 def main(argv: Sequence[str] | None = None) -> int
@@ -319,8 +336,8 @@ def main(argv: Sequence[str] | None = None) -> int
 
 - `settings_from_args` starts from `default_settings()` and applies the flags. `--output-dir` also moves the database to `<output-dir>/enron.db` unless `--db` is given. The error log and `duplicates_report.csv` stay at the repo root (`Settings.error_log`, `Settings.duplicates_report`) whatever `--output-dir` says. `--mailboxes` replaces the D-013 list. `--limit N` (default 10, must not be negative) caps live sends only.
 - `run_notifications` is the notify stage, kept in `main.py` because it ties `notify` to the database and `notify` never touches the DB. Dry run: every flag gets a draft. Live: `notify.select_live_flags(flags, limit)` first. Either way it calls `notify.send_notifications`, writes the log it is given (a live run appends, a dry run rewrites), and calls `db.mark_notified` for each result with status `SENT` (D-022 items 8 and 9, D-024 item 7). Dry runs and failures never mark anything.
-- `run_pipeline` is the pipeline sequence, kept apart from argument parsing so tests can call it with a `Settings`, a fake `body_parser` and a fake `sender`. It creates the output folder and rebuilds the database (`db.init_schema`). Then ingest (writes `extraction_stats.json`, prints `format_stats`), dedup (`mark_storage_copies`, `flag_duplicates` with `settings.similarity_threshold`, `summarize`, `write_report`, `output/dedup_stats.json`, prints the stats), and notify (`DryRunSender(output/replies)` unless live, then `run_notifications`, then a one-line summary). The log is `output/send_log.csv` in live mode and `output/send_log_dry_run.csv` in a dry run (`send_log_path`; D-024 item 7). It raises `FileNotFoundError` for a missing maildir or mailbox, and `ValueError` if `send_live` is set with no `sender`.
-- `main` reads `NOTIFY_TO` from the environment, only in live mode, and builds `notify.McpSender` **before any work starts**, so a missing or unusable address stops the run with `error: NOTIFY_TO ...` on stderr and exit code 1, with nothing ingested or written. It closes the sender in a `finally` when the run ends, however it ends. It also turns `FileNotFoundError` into a one-line `error: ...` and exit code 1. Success returns 0, including a live run in which some sends failed (they are in `send_log.csv` and the console summary).
+- `run_pipeline` is the pipeline sequence, kept apart from argument parsing so tests can call it with a `Settings`, a fake `body_parser` and a fake `sender`. It first calls `check_inputs`, so a missing maildir or mailbox raises before anything is touched (the previous database survives a typo); then it creates the output folder and rebuilds the database (`db.init_schema`). Then ingest (writes `extraction_stats.json`, prints `format_stats`), dedup (`mark_storage_copies`, `flag_duplicates` with `settings.similarity_threshold`, `summarize`, `write_report`, `output/dedup_stats.json`, prints the stats), and notify (`DryRunSender(output/replies)` unless live, then `run_notifications`, then a one-line summary). The log is `output/send_log.csv` in live mode and `output/send_log_dry_run.csv` in a dry run (`send_log_path`; D-024 item 7). It raises `FileNotFoundError` for a missing maildir or mailbox, and `ValueError` if `send_live` is set with no `sender`.
+- `settings_from_args` resolves the live recipient: `--notify-to`, else the `NOTIFY_TO` environment variable (read there and nowhere in the package). `main` builds `notify.McpSender` from `settings.notify_to` in live mode only, **before any work starts**, so a missing or unusable address stops the run with `error: NOTIFY_TO ... Give the recipient with --notify-to ADDRESS or the NOTIFY_TO environment variable.` on stderr and exit code 1, with nothing ingested or written. It closes the sender in a `finally` when the run ends, however it ends. It also turns `FileNotFoundError` into a one-line `error: ...` and exit code 1. Success returns 0, including a live run in which some sends failed (they are in `send_log.csv` and the console summary).
 
 Without `--send-live` nothing is ever sent. `send_log.csv` is the log of live sends only (it is the spec's deliverable of that name); dry-run attempts go to `send_log_dry_run.csv`.
 

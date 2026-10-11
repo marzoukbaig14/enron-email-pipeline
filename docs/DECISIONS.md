@@ -482,3 +482,41 @@ Consequences: A notice for "Re: X" no longer reads "Re: Re: X". The live
 log is real evidence and survives later runs. A broken MCP setup costs
 one failed row per notice, not a subprocess each. Live runs accumulate in
 send_log.csv, so delete it before a fresh final run.
+
+## D-025: Parameter-driven pipeline
+Date: 2026-10-11
+Status: Accepted
+Context: An audit found run settings already carried by Settings in
+config.py, but the output file names were literals in main.py, the
+recipient could only come from the environment, the similarity threshold
+and mailbox names were not validated, and a missing mailbox was reported
+only after init_schema had wiped the existing database.
+Decision:
+1. Every default lives in config.py: the Settings fields plus named
+   constants for the output folder, the file names inside it, the
+   NOTIFY_TO variable name, the threshold (90, the spec value) and the
+   live-send limit. main.py holds no literal run settings. Settings
+   exposes the derived paths (extraction stats, dedup stats, drafts
+   folder, send log).
+2. Command line: --maildir, --mailboxes NAME [NAME ...] (any count, 1 or
+   more; default is the D-013 five), --output-dir, --db-path (--db stays
+   as an alias), --threshold, --send-live, --limit, --notify-to. Help
+   text shows the defaults from config.py.
+3. --notify-to wins over the NOTIFY_TO environment variable. Live mode
+   needs one of them; a dry run needs neither.
+4. Checks run before any work, and a failed check creates, wipes or
+   writes nothing: --threshold must be 0 to 100; mailbox names must be
+   plain folder names (no slash, backslash, "." or ".."), and repeated
+   names are dropped; the maildir and every named mailbox folder must
+   exist; live mode needs a usable recipient. Bad option values exit 2.
+   A missing maildir, mailbox or recipient prints one error line and
+   exits 1.
+5. argv and the environment are read only in main.py. Library modules
+   take arguments. dedup keeps its own default threshold so it works on
+   its own; a test keeps it equal to the one in config.py.
+6. The error log and duplicates report stay at the repo root whatever
+   --output-dir says (D-018, D-021), and have no flag. A trial run on
+   other mailboxes therefore rewrites them.
+Consequences: A typo in --mailboxes no longer destroys the previous
+database. A run on any subset of mailboxes needs no code change. Changing
+a default means editing config.py only.
