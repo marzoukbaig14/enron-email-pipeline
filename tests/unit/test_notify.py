@@ -501,13 +501,13 @@ def test_live_mode_refuses_to_start_without_a_usable_notify_to(value):
 
 
 def test_the_mcp_sender_keeps_the_notify_to_it_was_given():
-    assert McpSender(" me@gmail.com ").notify_to == "me@gmail.com"
+    assert McpSender(" me@example.com ").notify_to == "me@example.com"
 
 
 def test_creating_the_mcp_sender_starts_nothing():
     # The connection opens on the first send, so building the sender (which
     # main does before any work) neither spawns a server nor needs Node.
-    sender = McpSender("me@gmail.com")
+    sender = McpSender("me@example.com")
     sender.close()  # closing a sender that never connected is a no-op
 
 
@@ -705,7 +705,7 @@ def test_send_log_timestamps_are_utc_iso_text(tmp_path):
     pacific = timezone(timedelta(hours=-7))
     result = SendResult(
         timestamp=datetime(2026, 10, 11, 11, 30, 5, tzinfo=pacific),
-        recipient="me@gmail.com",
+        recipient="me@example.com",
         subject="s",
         status="sent",
         error=None,
@@ -811,14 +811,14 @@ def test_a_group_of_three_gives_two_drafts_and_one_live_send(conn, tmp_path):
 def test_live_sends_the_template_to_the_enron_sender_but_delivers_to_notify_to(conn, tmp_path):
     flags = [make_flag(1, sender="jane.doe@enron.com")]
     seed(conn, flags)
-    sender = FakeSender(deliver_to="me@gmail.com")
+    sender = FakeSender(deliver_to="me@example.com")
 
     [result] = stage(conn, flags, sender, tmp_path, live=True)
 
     assert sender.messages[0].to == "jane.doe@enron.com"  # the template's To line
-    assert result.recipient == "me@gmail.com"  # where it really went
+    assert result.recipient == "me@example.com"  # where it really went
     _, [row] = read_log(tmp_path / "send_log.csv")
-    assert row["recipient"] == "me@gmail.com"
+    assert row["recipient"] == "me@example.com"
 
 
 def test_live_limit_caps_sends_at_the_stage_level(conn, tmp_path):
@@ -922,8 +922,8 @@ def test_the_stage_with_no_flags_writes_an_empty_log_and_sends_nothing(conn, tmp
 def test_a_live_stage_appends_to_its_log_across_runs(conn, tmp_path):
     flags = group_of("<a@thyme>", [1, 2])
     seed(conn, flags)
-    stage(conn, flags, FakeSender(deliver_to="me@gmail.com"), tmp_path, live=True)
-    stage(conn, flags, FakeSender(deliver_to="me@gmail.com", fail_for={"<dup2@thyme>"}), tmp_path, live=True)
+    stage(conn, flags, FakeSender(deliver_to="me@example.com"), tmp_path, live=True)
+    stage(conn, flags, FakeSender(deliver_to="me@example.com", fail_for={"<dup2@thyme>"}), tmp_path, live=True)
     columns, rows = read_log(tmp_path / "send_log.csv")
     assert columns == LOG_COLUMNS
     # One send per run (the group's latest duplicate), and the second run adds to the first.

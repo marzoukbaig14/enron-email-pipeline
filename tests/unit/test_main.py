@@ -252,7 +252,7 @@ def test_main_returns_zero_on_success(settings, monkeypatch, capsys):
 # email (<c1>) is unique. So dedup flags 3 emails in 2 groups, a dry run writes
 # 3 drafts, and a live run sends 2 (the latest of each group: <a3> and <b2>).
 
-NOTIFY_TO = "me@gmail.com"
+NOTIFY_TO = "me@example.com"
 DATES = {
     "a1": "Thu, 10 May 2001 10:00:00 -0700 (PDT)",
     "a2": "Mon, 14 May 2001 10:00:00 -0700 (PDT)",
@@ -831,13 +831,13 @@ def test_help_shows_the_defaults_from_config(capsys):
 
 
 def test_the_flag_wins_over_the_environment(monkeypatch):
-    monkeypatch.setenv("NOTIFY_TO", "env@gmail.com")
-    assert main_module.settings_from_args(["--notify-to", "flag@gmail.com"]).notify_to == "flag@gmail.com"
+    monkeypatch.setenv("NOTIFY_TO", "env@example.com")
+    assert main_module.settings_from_args(["--notify-to", "flag@example.com"]).notify_to == "flag@example.com"
 
 
 def test_the_environment_is_the_fallback(monkeypatch):
-    monkeypatch.setenv("NOTIFY_TO", "env@gmail.com")
-    assert main_module.settings_from_args([]).notify_to == "env@gmail.com"
+    monkeypatch.setenv("NOTIFY_TO", "env@example.com")
+    assert main_module.settings_from_args([]).notify_to == "env@example.com"
 
 
 def test_with_neither_there_is_no_recipient(monkeypatch):
@@ -847,17 +847,17 @@ def test_with_neither_there_is_no_recipient(monkeypatch):
 
 def test_a_live_run_uses_the_notify_to_flag(dup_settings, monkeypatch, fake_mcp, capsys):
     # fake_mcp also sets NOTIFY_TO in the environment; the flag must beat it.
-    assert run_cli(dup_settings, monkeypatch, "--send-live", "--notify-to", "flag@gmail.com") == 0
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--notify-to", "flag@example.com") == 0
     [sender] = fake_mcp.instances
-    assert sender.notify_to == "flag@gmail.com"
-    assert "flag@gmail.com" in capsys.readouterr().out  # the summary says where the mail went
-    assert {r["recipient"] for r in read_csv(dup_settings.output_dir / "send_log.csv")} == {"flag@gmail.com"}
+    assert sender.notify_to == "flag@example.com"
+    assert "flag@example.com" in capsys.readouterr().out  # the summary says where the mail went
+    assert {r["recipient"] for r in read_csv(dup_settings.output_dir / "send_log.csv")} == {"flag@example.com"}
 
 
 def test_a_live_run_works_with_the_flag_and_no_environment_variable(dup_settings, monkeypatch, fake_mcp):
     monkeypatch.delenv("NOTIFY_TO", raising=False)
-    assert run_cli(dup_settings, monkeypatch, "--send-live", "--notify-to", "only-flag@gmail.com") == 0
-    assert fake_mcp.instances[0].notify_to == "only-flag@gmail.com"
+    assert run_cli(dup_settings, monkeypatch, "--send-live", "--notify-to", "only-flag@example.com") == 0
+    assert fake_mcp.instances[0].notify_to == "only-flag@example.com"
 
 
 def test_live_mode_with_neither_fails_fast_naming_both_ways(dup_settings, monkeypatch, capsys):
@@ -871,7 +871,7 @@ def test_live_mode_with_neither_fails_fast_naming_both_ways(dup_settings, monkey
 def test_a_blank_flag_is_an_error_not_a_fallback_to_the_environment(dup_settings, monkeypatch, capsys):
     # The real McpSender checks the address when it is built, before it connects to
     # anything, so this starts no server. The environment variable is set and must be ignored.
-    monkeypatch.setenv("NOTIFY_TO", "env@gmail.com")
+    monkeypatch.setenv("NOTIFY_TO", "env@example.com")
     assert run_cli(dup_settings, monkeypatch, "--send-live", "--notify-to", "") == 1
     err = capsys.readouterr().err
     assert "--notify-to" in err and "Traceback" not in err

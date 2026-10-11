@@ -27,7 +27,7 @@ from enron_pipeline.models import DuplicateFlag, SendStatus
 from enron_pipeline.notify import McpSender, send_notifications
 
 NOW = datetime(2026, 10, 11, 18, 30, 5, tzinfo=timezone.utc)
-NOTIFY_TO = "me@gmail.com"
+NOTIFY_TO = "me@example.com"
 SCHEMA_PROPERTIES = {
     "to", "subject", "body", "htmlBody", "mimeType", "cc", "bcc", "threadId", "inReplyTo", "attachments",
 }
