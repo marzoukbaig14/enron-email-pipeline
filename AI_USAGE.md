@@ -265,10 +265,47 @@ $ grep -c ",sent," output/send_log.csv
 222
 ```
 
+Send window: 15:28:59Z to 15:29:43Z (the first and last rows of `output/send_log.csv`).
+
+Raw headers from one received notice ("IMPORTANT VIDEO ANNOUNCEMENT"), from Gmail's "Show original":
+
+```
+In-Reply-To: <27114403.1075862308571.JavaMail.evans@thyme>
+References: <27114403.1075862308571.JavaMail.evans@thyme>
+```
+
 The full log is in `output/send_log.csv`.
 
 **Screenshots**
 
-![Notices in the Gmail inbox](docs/screenshots/inbox.png)
+*1. Gmail search for `[Duplicate Notice]`: top of the results, notices from the final run (received 11:29 AM).*
 
-![One received notice](docs/screenshots/notice.png)
+![Gmail search results, top of the page](docs/screenshots/01-inbox-notices-top.png)
+
+*2. The same search, scrolled partway down.*
+
+![Gmail search results, scrolled partway](docs/screenshots/02-inbox-notices-middle.png)
+
+*3. The same search, scrolled to the bottom of the page.*
+
+![Gmail search results, bottom of the page](docs/screenshots/03-inbox-notices-bottom.png)
+
+*4. One received notice: "Your Opinion Counts...Win $1000!".*
+
+![Received notice: Your Opinion Counts](docs/screenshots/04-notice-opinion-counts.png)
+
+*5. One received notice: "UBSW Orientation".*
+
+![Received notice: UBSW Orientation](docs/screenshots/05-notice-ubsw-orientation.png)
+
+*6. One received notice: "IMPORTANT VIDEO ANNOUNCEMENT".*
+
+![Received notice: IMPORTANT VIDEO ANNOUNCEMENT](docs/screenshots/06-notice-important-video-announcement.png)
+
+*7. Gmail's "Show original" for the "IMPORTANT VIDEO ANNOUNCEMENT" notice: `In-Reply-To` and `References` are both set.*
+
+![Raw headers of the notice](docs/screenshots/07-raw-headers.png)
+
+*8. The same view, scrolled down to the notice body.*
+
+![Raw headers and body of the notice](docs/screenshots/08-raw-headers-and-body.png)
