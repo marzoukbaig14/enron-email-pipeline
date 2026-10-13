@@ -87,15 +87,28 @@ def make_flag(
 # --- the spec template -----------------------------------------------------------------
 
 
+# The assignment has been kept under both spellings (docs/assignment.md, then
+# docs/ASSIGNMENT.md), so look for either.
+SPEC_FILES = ("ASSIGNMENT.md", "assignment.md")
+
+
+def spec_text() -> str:
+    for name in SPEC_FILES:
+        path = ROOT / "docs" / name
+        if path.exists():
+            return path.read_text()
+    raise FileNotFoundError(f"the assignment is not in docs/ (looked for {', '.join(SPEC_FILES)})")
+
+
 def spec_template() -> tuple[list[str], list[str]]:
-    """The notification template from docs/assignment.md, section 4.2.
+    """The notification template from the assignment (docs/ASSIGNMENT.md), section 4.2.
 
     Returns (header_lines, body_lines) with the markdown escapes removed:
     "\\<x\\>" -> "<x>", "\\[x\\]" -> "[x]". The spec shows a blank line between
     every template line; blank lines are kept in the body and dropped from the
     four header lines (blank lines cannot separate email headers).
     """
-    text = (ROOT / "docs" / "assignment.md").read_text()
+    text = spec_text()
     after = text[text.index("4.2 Notification Email Logic"):]
     quoted, started = [], False
     for line in after.splitlines():
