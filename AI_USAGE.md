@@ -92,6 +92,21 @@ Why: the agent checks my proposed rule against the data before building it. Each
 
 Why: with two sessions running, I wasn't sure which one had finished notify. The agent looked first, found it already built, and rebuilt nothing.
 
+### How the tests were written
+
+Every module started with tests, the same way everything else started with a written decision. The prompt listed the behaviors I wanted. The agent turned each one into a test, ran the suite, and showed me the new tests failing. Only then did it write the code. A test that has never failed might not test anything.
+
+A few habits shaped the tests:
+
+- **Behaviors, not implementation.** Prompts described what should happen ("a 13-hour gap is not collapsed"), not how to code it.
+- **Pairs at the boundary.** Each "yes" case had a matching "no" case right next to it, like 12 hours collapsed and 13 hours not. That stops a rule from being too wide or too narrow.
+- **Small made-up emails.** Unit tests use short synthetic emails, so they run in seconds with no dataset. Real data was checked separately, on samples (section 5).
+- **Exact output where it matters.** One golden test compares a whole notice to a fixed string, character for character.
+- **No network.** The MCP sender is tested against a mocked session, so tests never send email.
+- **Tests that test the tests.** The agent planted small bugs on purpose, and checked that a test failed each time (section 5).
+
+The suite ended at 851 tests and runs in under 10 seconds.
+
 ## 4. Iterations and debugging
 
 Four cases in detail, then some shorter ones.
