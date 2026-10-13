@@ -1,7 +1,7 @@
 """Tests for notify.py and the notification stage in main.py (D-022, amended by D-024, D-026).
 
 Layout of this file:
-- Rendering: the notice has the words of the template in docs/assignment.md
+- Rendering: the notice has the words of the template in docs/ASSIGNMENT.md
   (section 4.2), in order, laid out as D-026 says (indented blocks, blank lines
   only between blocks; the spec's blank line between every line is a Word
   artifact). One test reads the quoted template out of the spec file and

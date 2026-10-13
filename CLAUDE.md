@@ -1,6 +1,6 @@
 # Enron Email Pipeline
 
-Take-home assignment. Full spec in docs/assignment.md.
+Take-home assignment. Full spec in docs/ASSIGNMENT.md.
 
 ## How we work
 - Design decisions are made outside this tool and saved in docs/DECISIONS.md and docs/plans/.
