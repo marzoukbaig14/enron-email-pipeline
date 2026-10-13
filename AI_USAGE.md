@@ -246,7 +246,7 @@ Claude Code called the tool and got back `Email sent successfully with ID: 1a12c
 - **One recipient.** Enron addresses are dead, so every live notice goes to my own inbox (`--notify-to`). The notice's To line still shows the real Enron sender.
 - **One notice per duplicate group**, about the latest duplicate, capped by `--limit`.
 - **Failures don't stop the run.** A failed send is logged and the run moves on.
-- **Tested without the network.** 36 tests use a mocked MCP session.
+- **Tested without the network.** 30 tests use a mocked MCP session.
 
 ### 8.5 Issues and how I fixed them
 

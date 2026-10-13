@@ -187,7 +187,9 @@ export NOTIFY_TO=you@example.com        # where live notices are delivered
 python main.py --send-live --limit 5    # live run: sends at most 5 notices
 ```
 
-A full default run takes about 70 seconds on the development machine.
+A run on fewer mailboxes overwrites the committed outputs in your copy. To restore them, run `git checkout -- . && git clean -fd output/`. The database is not tracked, so a full `python main.py` rebuilds it.
+
+A full default run takes about 25 to 70 seconds, depending on the machine.
 
 | Option | Default | What it does |
 |---|---|---|
