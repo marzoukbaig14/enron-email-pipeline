@@ -226,3 +226,14 @@ output/*.db
 output/*.db-journal
 /*.db
 /*.db-journal
+
+# OS, editor and merge leftovers
+.DS_Store
+*.bak
+*.orig
+*.rej
+*.swp
+*~
+
+# Per-user Claude Code settings (not part of the project)
+.claude/settings.local.json
