@@ -15,6 +15,7 @@ artifact of the Word document it came from.)
 """
 import csv
 import re
+import sys
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
@@ -28,6 +29,9 @@ import anyio
 from anyio.from_thread import start_blocking_portal
 from mcp import ClientSession, MCPError
 from mcp.client.stdio import StdioServerParameters, stdio_client
+
+if sys.version_info < (3, 11):  # exception groups are built in from Python 3.11
+    from exceptiongroup import BaseExceptionGroup
 
 from enron_pipeline.models import DuplicateFlag, SendResult, SendStatus
 

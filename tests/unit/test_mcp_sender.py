@@ -12,6 +12,7 @@ argument names come from the server's own schema (scripts/list_mcp_tools.py):
 required `to` (a list), `subject`, `body`; optional `mimeType`, `inReplyTo`, ...;
 nothing else is allowed.
 """
+import sys
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -21,6 +22,9 @@ from types import SimpleNamespace
 import anyio
 import pytest
 from mcp import MCPError
+
+if sys.version_info < (3, 11):  # exception groups are built in from Python 3.11
+    from exceptiongroup import ExceptionGroup
 
 from enron_pipeline import notify
 from enron_pipeline.models import DuplicateFlag, SendStatus

@@ -2,4 +2,5 @@ pytest>=8.0
 rapidfuzz>=3.0
 mcp>=2.3
 anyio>=4.0
+exceptiongroup; python_version < "3.11"
 -e .
