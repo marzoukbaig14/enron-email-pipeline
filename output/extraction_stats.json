@@ -1,0 +1,53 @@
+{
+  "total_found": 18791,
+  "parsed": 18165,
+  "failed": 626,
+  "failures_by_reason": {
+    "missing to": 626
+  },
+  "field_counts": {
+    "message_id": 18165,
+    "date": 18165,
+    "from_address": 18165,
+    "to_addresses": 18165,
+    "subject": 17863,
+    "body": 17093,
+    "source_file": 18165,
+    "cc_addresses": 5526,
+    "bcc_addresses": 5526,
+    "x_from": 18165,
+    "x_to": 18165,
+    "x_cc": 5545,
+    "x_bcc": 19,
+    "x_folder": 18165,
+    "x_origin": 18165,
+    "content_type": 18165,
+    "has_attachment": 18165,
+    "forwarded_content": 3344,
+    "quoted_content": 4782,
+    "headings": 1870
+  },
+  "completeness_percent": {
+    "message_id": 100.0,
+    "date": 100.0,
+    "from_address": 100.0,
+    "to_addresses": 100.0,
+    "subject": 98.34,
+    "body": 94.1,
+    "source_file": 100.0,
+    "cc_addresses": 30.42,
+    "bcc_addresses": 30.42,
+    "x_from": 100.0,
+    "x_to": 100.0,
+    "x_cc": 30.53,
+    "x_bcc": 0.1,
+    "x_folder": 100.0,
+    "x_origin": 100.0,
+    "content_type": 100.0,
+    "has_attachment": 100.0,
+    "forwarded_content": 18.41,
+    "quoted_content": 26.33,
+    "headings": 10.29
+  },
+  "has_attachment_true_percent": 14.43
+}

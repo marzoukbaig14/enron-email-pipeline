@@ -1,0 +1,27 @@
+To: orderdetails@buy.com
+Subject: [Duplicate Notice] Re: Your buy.com order is on its way
+Date: Tue, 13 Oct 2026 15:27:54 +0000
+References: <20571032.1075848310360.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <20571032.1075848310360.JavaMail.evans@thyme>
+    Date Sent:   2000-11-30T14:02:00Z
+    Subject:     Your buy.com order is on its way
+
+  Original Email on Record:
+    Message-ID:  <19694210.1075848310193.JavaMail.evans@thyme>
+    Date Sent:   2000-11-28T20:04:00Z
+
+  Similarity Score: 97.64%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

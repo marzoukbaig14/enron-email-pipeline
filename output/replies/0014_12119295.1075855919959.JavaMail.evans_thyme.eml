@@ -1,0 +1,27 @@
+To: sally.beck@enron.com
+Subject: [Duplicate Notice] Re: Your approval is requested
+Date: Tue, 13 Oct 2026 15:27:54 +0000
+References: <12119295.1075855919959.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <12119295.1075855919959.JavaMail.evans@thyme>
+    Date Sent:   2000-08-10T15:33:00Z
+    Subject:     Your approval is requested
+
+  Original Email on Record:
+    Message-ID:  <13594697.1075855919981.JavaMail.evans@thyme>
+    Date Sent:   2000-08-10T15:31:00Z
+
+  Similarity Score: 97.93%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.
