@@ -1,6 +1,8 @@
 # AI usage
 
-This file covers sections 4.3 and 6 of the assignment. It is written in the first person, but Claude Code drafted it on the last day, because I asked it to. The sources were my Claude Code transcripts (`~/.claude/projects/`), `docs/DECISIONS.md`, `docs/plans/`, the git log and the repo files. Where a claim could not be checked against a source, I say so, and the parts I must confirm are marked `TODO-ZOOK`.
+Drafted by Claude Code from my transcripts and decision log. I reviewed and edited it.
+
+This file covers sections 4.3 and 6 of the assignment. It is written in the first person. The sources were my Claude Code transcripts (`~/.claude/projects/`), `docs/DECISIONS.md`, `docs/plans/`, the git log and the repo files. Where a claim could not be checked against a source, I say so.
 
 Contents: [1. Tool used](#1-tool-used) · [2. Prompting strategy](#2-prompting-strategy) · [3. Iterations and debugging](#3-iterations-and-debugging) · [4. Verification](#4-verification) · [5. What I wrote vs. what AI wrote](#5-what-i-wrote-vs-what-ai-wrote) · [6. Lessons learned](#6-lessons-learned) · [7. MCP integration](#7-mcp-integration)
 
@@ -39,11 +41,10 @@ The sessions, in order:
 | Oct 11 | schema | `schema.sql` and tests: D-012 |
 | Oct 11 | layout and models | `module-layout.md`, skeleton, enums: D-014, D-015 |
 | Oct 11 | header parser | D-016, D-017 |
-| Oct 11 | **agent 02** | db, discover, ingest (D-018), `main.py` ingest stage, `sample_queries.sql`, real run, notify (D-022) |
-| Oct 11 | **agent 03** | parse_body (D-019, D-020), dedup (D-021, D-023), then notify review, MCP sender (D-024), parameter-driven CLI (D-025), notice layout (D-026), README |
+| Oct 11 to 13 | two parallel sessions | db, discover, ingest (D-018) and the `main.py` wiring; parse_body (D-019, D-020); dedup (D-021, D-023); notify (D-022), the MCP sender (D-024), the parameter-driven CLI (D-025), the notice layout (D-026); the README |
 | Oct 11 | MCP test | one session that only sent the manual test email (section 7) |
 
-Agents 02 and 03 started within a minute of each other and ran in parallel. Each prompt named what the other was building and what not to touch ("Another session is building db, discover, and ingest in parallel. Don't touch those"). Both appended to `DECISIONS.md` and edited `module-layout.md`. Two decision numbers collided (D-018 became D-019, D-022 became D-023). My rule "next free number, re-read the file right before appending" handled both.
+The two sessions started within a minute of each other and ran in parallel. Each prompt named what the other was building and what not to touch ("Another session is building db, discover, and ingest in parallel. Don't touch those"). Both appended to `DECISIONS.md` and edited `module-layout.md`. Two decision numbers collided (D-018 became D-019, D-022 became D-023). My rule "next free number, re-read the file right before appending" handled both.
 
 ## 2. Prompting strategy
 
@@ -114,7 +115,7 @@ Cases 1 to 4 are in detail. Cases 5 to 8 are shorter.
 
 ### Case 1: the dedup subject regex was unanchored (caught by a test)
 
-*What went wrong.* Agent 03 wrote `normalize_subject` to strip `Re:`/`Fwd:` prefixes. Its regex was not anchored to the start of the string, so it also removed "re:" from the middle of a subject. "Update re: budget" became "update budget".
+*What went wrong.* The agent wrote `normalize_subject` to strip `Re:`/`Fwd:` prefixes. Its regex was not anchored to the start of the string, so it also removed "re:" from the middle of a subject. "Update re: budget" became "update budget".
 
 *How it was caught.* I had asked for subject-normalization tests, and the agent's test that only leading prefixes are stripped caught it. Of 88 dedup tests, 87 passed and `test_only_leading_prefixes_are_stripped` failed: `assert 'update budget' == 'update re: budget'`.
 
@@ -134,7 +135,7 @@ Cases 1 to 4 are in detail. Cases 5 to 8 are shorter.
 
 ### Case 3: a scripted edit duplicated a block in parse_body (caught by `NameError`)
 
-*What went wrong.* For D-020, agent 03 changed `parse_body.py` with a scripted edit. The slice matched the wrong place and left a copy of an old helper next to the new one. The old copy still used a name that no longer existed.
+*What went wrong.* For D-020, the agent changed `parse_body.py` with a scripted edit. The slice matched the wrong place and left a copy of an old helper next to the new one. The old copy still used a name that no longer existed.
 
 *How it was caught.* After the edit, 84 of 117 parse_body tests failed with `NameError: name '_NOTES_DATE' is not defined` at `parse_body.py:359`.
 
@@ -142,19 +143,19 @@ Cases 1 to 4 are in detail. Cases 5 to 8 are shorter.
 
 ### Case 4: a mailbox typo wiped the database before it was validated (found in the D-025 audit)
 
-*What went wrong.* Agent 02's `run_pipeline` (my first CLI build) rebuilt the database with `init_schema` and only then started ingest. Ingest is where a missing mailbox folder raised its error. So a typo such as `--mailboxes beck-x` gave a clean error message, but only after the old database was already deleted.
+*What went wrong.* The first version of `run_pipeline` rebuilt the database with `init_schema` and only then started ingest. Ingest is where a missing mailbox folder raised its error. So a typo such as `--mailboxes beck-x` gave a clean error message, but only after the old database was already deleted.
 
-*How it was caught.* Not by a test. Agent 03 found it during the "audit only" step of the parameter-driven CLI prompt (prompt 3 above): "a typo in `--mailboxes` gave a clean error, but only after `init_schema` had wiped the previous database. My probe confirmed the old row was gone."
+*How it was caught.* Not by a test. The agent found it during the "audit only" step of the parameter-driven CLI prompt (prompt 3 above): "a typo in `--mailboxes` gave a clean error, but only after `init_schema` had wiped the previous database. My probe confirmed the old row was gone."
 
-*Fix (D-025).* All checks run before any work: the maildir and every named mailbox must exist, the threshold must be 0 to 100, and mailbox names must be plain folder names. A failed check creates, wipes and writes nothing. The agent re-ran the same probe and the old database survived. 63 tests were added. This was my own session's code, so it is a fair example of AI code passing its own tests while still having a design hole.
+*Fix (D-025).* All checks run before any work: the maildir and every named mailbox must exist, the threshold must be 0 to 100, and mailbox names must be plain folder names. A failed check creates, wipes and writes nothing. The agent re-ran the same probe and the old database survived. 63 tests were added. The code had passed all of its own tests, so this is a fair example of AI code passing its tests while still having a design hole.
 
 ### Case 5: the first notify build followed the spec's letter, not its intent (D-024, D-026)
 
-Agent 02 built notify to the spec as written. Three things were wrong, and I found each in review or in the live test:
+The first notify build followed the spec as written. Three things were wrong, and I found each in review or in the live test:
 
-- **Subject.** It used the flagged email's own subject. The spec says the original's. It also gave "Re: Re: X" when the subject already started with "Re:". The agent flagged this itself in its summary, and a later session's audit confirmed it. Fixed in D-024 with a new `original_subject` field on `DuplicateFlag`.
-- **Send log.** Both modes rewrote `output/send_log.csv` on every run. A dry run would have erased the live evidence the spec asks for. Agent 02 listed this as a hazard in its summary. D-024 made `send_log.csv` live-only and append-only, with dry runs in `send_log_dry_run.csv`.
-- **Body layout.** The spec shows a blank line between every template line, and my D-022 said to follow it "exactly". Agent 02 reproduced the blank lines literally and listed that as a judgment call. The raw source of the first live email showed no indentation and a blank line between all 13 lines. The blank lines are an artifact of the Word document, where each line was a paragraph. D-026 changed the layout and added a golden test.
+- **Subject.** It used the flagged email's own subject. The spec says the original's. It also gave "Re: Re: X" when the subject already started with "Re:". The agent flagged this itself in its summary, and a later audit confirmed it. Fixed in D-024 with a new `original_subject` field on `DuplicateFlag`.
+- **Send log.** Both modes rewrote `output/send_log.csv` on every run. A dry run would have erased the live evidence the spec asks for. The agent listed this as a hazard in its summary. D-024 made `send_log.csv` live-only and append-only, with dry runs in `send_log_dry_run.csv`.
+- **Body layout.** The spec shows a blank line between every template line, and my D-022 said to follow it "exactly". The agent reproduced the blank lines literally and listed that as a judgment call. The raw source of the first live email showed no indentation and a blank line between all 13 lines. The blank lines are an artifact of the Word document, where each line was a paragraph. D-026 changed the layout and added a golden test.
 
 ### Case 6: exploration scripts (first versions)
 
@@ -181,12 +182,13 @@ I did not trust a summary on its own. These are the checks I used.
 | **Real-data discovery passes before design.** | Profile of all 517,401 files, a value-shape census, frequent-line mining and a 50-file random review (`docs/exploration/`). These found folded headers, Lotus Notes shapes, LDAP-style recipients, 21,847 files with no `To`, and that Message-IDs are 100% unique, so dedup has to be content-based. |
 | **Real-data checks after each parser.** | 30 random files with a fixed seed, then all 14,352 parseable files in three mailboxes, for parse_headers and parse_body. These found the Notes reply gap (case 7). |
 | **Cross-checking numbers against earlier numbers.** | The full ingest gave 18,165 parsed. `SELECTION.md` had estimated 18,165. Per-mailbox counts matched exactly (11,555, 2,638, 2,134, 1,175, 663). |
+| **Checking a claim against the raw export.** The README says Bcc is not real blind-copy data. | In the raw files of the five mailboxes, 5,577 of the 18,791 files have a `Cc` header. All 5,577 also have a `Bcc` header with the identical value, and no file has a `Bcc` without a `Cc`. So the export copies Cc into Bcc, and Bcc completeness (30.42%) only repeats Cc (30.42%). The first exploration run had already counted 127,853 files corpus-wide where Bcc equals Cc. The pipeline stores Bcc as it appears (D-016), and the only real blind-copy names are in `X-bcc` (19 files). The five-mailbox counts were re-checked directly on the raw files on 2026-10-13 and matched. The README's 12-mailbox sample (8,185 of 8,185) is taken from the README and was not re-run for this file. |
 | **Reading flagged pairs myself.** | Three random flagged pairs side by side after each dedup change. That is how I accepted the 10-hour rule. |
 | **Drafts checked by a parser.** | All 540 dry-run `.eml` files were read back with `email.parser` and compared with `duplicates_report.csv` on To, Subject and References. |
-| **Live smoke test checked in Gmail.** | I opened the raw source of the received email and read the headers (section 7). The agent had written that this was not verified, and asked me to look. |
+| **Live sends checked in Gmail.** | I opened the raw source of the received email twice: for the one-notice smoke test on Oct 11 and again for the final run. The agent had written that how the server renders `inReplyTo` was not verified, and asked me to look. For the final run, the Gmail search for `[Duplicate Notice]` shows the notices from the 11:29 AM run, and I opened three of them (screenshots in section 7.6). |
 | **Secret scan before commits.** | The agent grepped every staged diff for my address, tokens, keys and home paths before committing. It found only test fixtures, which I then renamed to `example.com`. |
 
-**What I did not verify.** I did not read every line of generated code, and about 60% of the repo's Python is tests. My review focused on decisions, test names and behaviors, summaries and real data. The heading heuristic, the Notes marker shapes, and the 90% similarity cutoff are judgment calls that I checked on samples, not proven correct. Only one live notice was sent, so I have no evidence about a larger live run.
+**What I did not verify.** I did not read every line of generated code, and about 60% of the repo's Python is tests. My review focused on decisions, test names and behaviors, summaries and real data. The heading heuristic, the Notes marker shapes, and the 90% similarity cutoff are judgment calls that I checked on samples, not proven correct. The final live run sent 222 notices, all to my own address, with 0 failures. I opened three in Gmail and read the raw source of one. I did not read all 222.
 
 ## 5. What I wrote vs. what AI wrote
 
@@ -205,17 +207,17 @@ Size of the tracked files:
 | `docs/plans/module-layout.md` | 485 |
 | Exploration reports (generated by the scripts) | 1,415 |
 
-My proposed split. **TODO-ZOOK: confirm or correct every percentage below.**
+My split:
 
 | Part | Me | AI | Notes |
 |---|---|---|---|
-| Code, tests, SQL, scripts (about 12,600 lines) | 0% (TODO-ZOOK) | 100% (TODO-ZOOK) | I typed no code in the transcripts. If I edited any file by hand outside Claude Code, it would not show there. |
-| Decisions D-001 to D-026 | the choices: 100% (TODO-ZOOK) | the wording of 4 entries (TODO-ZOOK) | I supplied the text of 22 entries in my prompts, drafted in claude.ai. The agents drafted D-020, D-024, D-025 and D-026 from my instructions. |
-| Prompts and task breakdown | 100% (TODO-ZOOK) | 0% (TODO-ZOOK) | Drafted in the claude.ai chat, which is also AI, so "mine" means I decided and edited them. |
-| `module-layout.md` | direction (TODO-ZOOK) | text (TODO-ZOOK) | The agents wrote it from my decisions, and later updated it themselves after each change. |
-| Review, acceptance, real-data judgment | 100% (TODO-ZOOK) | 0% (TODO-ZOOK) | Reading summaries, eyeballing pairs, choosing thresholds. |
-| Google Cloud, OAuth and MCP registration | 100% (TODO-ZOOK) | 0% (TODO-ZOOK) | Manual console work (section 7). The MCP client code is AI-written. |
-| `README.md`, `AI_USAGE.md` | edits only (TODO-ZOOK) | drafts (TODO-ZOOK) | Both were drafted by Claude Code from my instructions. |
+| Code, tests, SQL, scripts (about 12,600 lines) | 0% | 100% | I typed no code in the transcripts. If I edited any file by hand outside Claude Code, it would not show there. |
+| Decisions D-001 to D-026 | the choices: 100% | the wording of 4 entries | I supplied the text of 22 entries in my prompts, drafted in claude.ai. The agents drafted D-020, D-024, D-025 and D-026 from my instructions. |
+| Prompts and task breakdown | 100% | 0% | Drafted in the claude.ai chat, which is also AI, so "mine" means I decided and edited them. |
+| `module-layout.md` | direction | text | The agents wrote it from my decisions, and later updated it themselves after each change. |
+| Review, acceptance, real-data judgment | 100% | 0% | Reading summaries, eyeballing pairs, choosing thresholds. |
+| Google Cloud, OAuth and MCP registration | 100% | 0% | Manual console work (section 7). The MCP client code is AI-written. |
+| `README.md`, `AI_USAGE.md` | edits only | drafts | Both were drafted by Claude Code from my instructions. |
 
 In short: the code is almost entirely AI-generated. My contribution was the decisions, the specs, the review, and the live setup.
 
@@ -290,7 +292,7 @@ Email sent successfully with ID: 1a12c54c6b0940f5
 
 It also said that the ID only means Gmail accepted the message, and that it had not confirmed delivery. I checked the inbox.
 
-**Python as the MCP client** (agent 03, 19:03). The pipeline does not ask a model to send anything. Python calls the tool directly. The prompt (quoted in part in section 2, example 2) was:
+**Python as the MCP client** (19:03). The pipeline does not ask a model to send anything. Python calls the tool directly. The prompt (quoted in part in section 2, example 2) was:
 
 > Python acts as an MCP client using the official `mcp` SDK (stdio transport). It launches `npx @gongrzhe/server-gmail-autoauth-mcp` and calls send_email.
 > Do NOT guess argument names. First write scripts/list_mcp_tools.py that connects, calls list_tools(), and prints each tool's name and input schema. …
@@ -306,7 +308,7 @@ It also said that the ID only means Gmail accepted the message, and that it had 
 - **What is sent.** `to = [NOTIFY_TO]`, `subject`, `body`, `mimeType = "text/plain"`, and `inReplyTo` = the flagged email's message id. The body starts with the template's four header lines (To: the real Enron sender, Subject, Date, References), then a blank line, then the notice.
 - **One recipient.** Enron addresses are dead, so every live email goes to `NOTIFY_TO` (D-022). The template's To line keeps the real Enron sender.
 - **One session per run.** The connection opens on the first send and closes at the end. A tool error, an MCP error or a 60-second timeout fails that one message and carries on. If the server cannot start, that message and all later ones fail with the reason, and there is no retry, so a broken setup cannot start one subprocess per email.
-- **Limits.** One email per duplicate group (the latest), at most `--limit` (default 10). Live runs append to `output/send_log.csv`, so repeated live runs would resend. At the time of writing, one live notice has been sent.
+- **Limits.** One email per duplicate group (the latest), at most `--limit` (default 10). Live runs append to `output/send_log.csv`, so repeated live runs would resend. The final run sent 222 notices (section 7.6).
 - **Tests.** 36 tests use a mocked MCP session (success, tool error, timeout, crash mid-run, server that cannot start, one shared session). No test touches the network.
 
 ### 7.5 Issues and how I resolved them
@@ -316,27 +318,61 @@ It also said that the ID only means Gmail accepted the message, and that it had 
 | 1 | Searching "gmail mcp" in Google Cloud showed Google's **hosted MCP APIs**, not the plain Gmail API. | The server needs the ordinary **Gmail API**. I searched for "Gmail API" and enabled that. |
 | 2 | The credentials wizard did **not add me as a test user**, so sign-in was refused. | Added my account by hand on the OAuth consent screen's **Audience** page. |
 | 3 | The sign-in redirects to `http://localhost:3000`. I was in a Codespace, not on my laptop. | It worked because **Codespaces forwarded port 3000** automatically, so the browser reached the server. |
-| 4 | `claude mcp add` defaults to **local scope**, and `gmail` did not appear in `/mcp`. | Re-added it at user scope (`--scope user`). **TODO-ZOOK:** a later `claude mcp get gmail` in this repo still reported "Local config (private to you in this project)". Confirm which scope is live. It does not affect the pipeline, because the Python client starts its own copy of the server. |
+| 4 | `claude mcp add` defaults to **local scope**, and in a new session the server did not show in `/mcp`. | I first registered the server with `claude mcp add`, which defaults to local scope. In a new session it didn't show in `/mcp`, so I re-added it at user scope through the `/mcp` form and restarted, and it appeared. A later `claude mcp get gmail` reported local config, so both registrations exist and the local one takes precedence. Either way the pipeline is unaffected, since the Python client launches its own server process. |
 | 5 | The tool did not show up right after I registered the server. | MCP servers load **only when a session starts**. I restarted Claude Code. |
 | 6 | The spec's References header cannot be set: the tool has no headers field. | Pass `inReplyTo`, and keep the References line in the body (D-024). I then checked the real headers in the live email (below). The server wrote both `In-Reply-To` and `References`. |
 | 7 | The first live email had a blank line between every line and no indentation. | D-026 fixed the layout and added a golden test (case 5). |
 
 ### 7.6 Evidence
 
-**`output/send_log.csv`** (live mode, one notice sent on 2026-10-11):
+**Final run, 2026-10-13: 222 sent, 0 failed.** `output/send_log.csv` has 222 rows. Every row has status `sent` and an empty error. All 222 went to `NOTIFY_TO` (my Gmail), one per duplicate group, between 15:28:59Z and 15:29:43Z. The header, the first three rows and the last two rows, verbatim:
 
 ```csv
 timestamp,recipient,subject,status,error
-2026-10-11T19:47:54Z,marzookbaig14@gmail.com,[Duplicate Notice] Re: Oslo - Next Week,sent,
+2026-10-13T15:28:59Z,marzookbaig14@gmail.com,[Duplicate Notice] Re: Oslo - Next Week,sent,
+2026-10-13T15:29:02Z,marzookbaig14@gmail.com,[Duplicate Notice] Re: Class Confirmation - James Scribner,sent,
+2026-10-13T15:29:02Z,marzookbaig14@gmail.com,[Duplicate Notice] Re: Organizational changes,sent,
+...
+2026-10-13T15:29:43Z,marzookbaig14@gmail.com,[Duplicate Notice] Re: Your Opinion Counts...Win $1000!,sent,
+2026-10-13T15:29:43Z,marzookbaig14@gmail.com,"[Duplicate Notice] Re: Take a Survey, Win a FREE New Computer!!",sent,
 ```
 
-**Raw headers of the received email** (Gmail, "Show original"):
+**Raw headers of one received email from the final run** (Gmail, "Show original", notice for "IMPORTANT VIDEO ANNOUNCEMENT"):
+
+```
+Subject: [Duplicate Notice] Re: IMPORTANT VIDEO ANNOUNCEMENT
+In-Reply-To: <27114403.1075862308571.JavaMail.evans@thyme>
+References: <27114403.1075862308571.JavaMail.evans@thyme>
+```
+
+The message body starts with the template's header block. The real delivery address is mine, and the template's To line keeps the Enron sender:
+
+```
+To: chairman.ken@enron.com
+Subject: [Duplicate Notice] Re: IMPORTANT VIDEO ANNOUNCEMENT
+Date: Tue, 13 Oct 2026 15:29:38 +0000
+References: <27114403.1075862308571.JavaMail.evans@thyme>
+```
+
+Both headers carry the flagged email's message id. The pipeline passes it only once, as `inReplyTo`, so the server renders that argument as both headers. That settles the "not verified" note in D-024. The same id and time appear in the pipeline's own files: `duplicates_report.csv` lists `<27114403.1075862308571.JavaMail.evans@thyme>` as the flagged email (original `<28514173.1075862151603.JavaMail.evans@thyme>`, score 100.00), and the send log has this notice at 15:29:38Z.
+
+The first check, the one-notice smoke test on 2026-10-11 ("Oslo - Next Week"), showed the same pair of headers:
 
 ```
 In-Reply-To: <8430921.1075855808059.JavaMail.evans@thyme>
 References: <8430921.1075855808059.JavaMail.evans@thyme>
 ```
 
-Both headers carry the flagged email's message id. The pipeline passes it only once, as `inReplyTo`, so the server renders that argument as both headers. That settles the "not verified" note in D-024.
+**Screenshots** (`docs/screenshots/`, all taken on 2026-10-13 after the final run):
 
-_Placeholder: add screenshots of the received email in the Gmail inbox and the "Show original" view to `docs/screenshots/`._
+- Gmail inbox, search `subject:"[Duplicate Notice]"`, notices received at 11:29 AM:
+  [page 1](screenshots/Screenshot%202026-10-13%20at%2011.51.42%E2%80%AFAM.png),
+  [scrolled](screenshots/Screenshot%202026-10-13%20at%2011.51.51%E2%80%AFAM.png),
+  [scrolled to the end of the page](screenshots/Screenshot%202026-10-13%20at%2011.51.55%E2%80%AFAM.png)
+- Opened notices:
+  ["Your Opinion Counts...Win $1000!"](screenshots/Screenshot%202026-10-13%20at%2011.51.59%E2%80%AFAM.png),
+  ["UBSW Orientation"](screenshots/Screenshot%202026-10-13%20at%2011.52.07%E2%80%AFAM.png),
+  ["IMPORTANT VIDEO ANNOUNCEMENT"](screenshots/Screenshot%202026-10-13%20at%2011.52.12%E2%80%AFAM.png)
+- Raw source ("Show original") of the "IMPORTANT VIDEO ANNOUNCEMENT" notice, showing `In-Reply-To` and `References`:
+  [headers](screenshots/Screenshot%202026-10-13%20at%2011.58.22%E2%80%AFAM.png),
+  [headers and body](screenshots/Screenshot%202026-10-13%20at%2011.58.29%E2%80%AFAM.png)
