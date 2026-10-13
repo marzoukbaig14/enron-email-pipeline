@@ -105,7 +105,7 @@ A few habits shaped the tests:
 - **No network.** The MCP sender is tested against a mocked session, so tests never send email.
 - **Tests that test the tests.** The agent planted small bugs on purpose, and checked that a test failed each time (section 5).
 
-The suite ended at 851 tests and runs in under 10 seconds.
+The suite ended at 853 tests and runs in under 10 seconds.
 
 ## 4. Iterations and debugging
 
@@ -156,7 +156,7 @@ Four cases in detail, then some shorter ones.
 
 | Check | What it showed |
 |---|---|
-| Tests written first and seen failing | 851 tests. Build prompts required seeing them fail before they passed, so they test something real. |
+| Tests written first and seen failing | 853 tests. Build prompts required seeing them fail before they passed, so they test something real. |
 | Breaking the code on purpose | The agent planted small bugs in the sample queries (4) and in notify (5). Each one made a test fail. |
 | Exploring the real data before designing | A profile of all 517,401 files found folded headers, Lotus Notes formats, missing To headers, and that Message-IDs are all unique. So dedup had to compare content, not IDs. |
 | Real-data checks after each parser | Fixed-seed samples, then whole mailboxes. This is how the Notes reply gap was found. |

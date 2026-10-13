@@ -363,6 +363,6 @@ An earlier one-notice smoke test came first. The received email had both the `In
 python -m pytest -q
 ```
 
-There are **851 tests**. They run in under 10 seconds. They need no dataset and no network. They use small made-up emails, and the Gmail MCP connection is faked. Nothing is ever sent.
+There are **853 tests**. They run in under 10 seconds. They need no dataset and no network. They use small made-up emails, and the Gmail MCP connection is faked. Nothing is ever sent.
 
 They cover each module, the command line (one mailbox, many mailboxes, a missing mailbox, bad option values), and the notice text (one test compares a whole notice with a fixed string). One test checks that no library module reads the command line or the environment.
