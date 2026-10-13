@@ -56,14 +56,15 @@ You need:
 - **Node.js 18 or newer.** Only for live sends. The Gmail MCP server runs through `npx`.
 - About 3 GB of disk for the dataset.
 
-Install the code. Run both `pip` commands. The first installs the libraries. The second installs this project's package, and `main.py` will not start without it.
+Install the code with one command, from the repo root. It installs the libraries and also this project's own package (the last line of `requirements.txt` is `-e .`), and `main.py` needs both.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install -e .
 ```
+
+Run it from the repo root. The `-e .` line means "this folder", so pip stops with an error if you run it from anywhere else.
 
 Download the dataset and unpack it into `data/maildir`:
 
@@ -209,7 +210,7 @@ The spec asks for at least 5 mailboxes and at least 10,000 emails. This project 
 | `schema.sql` | The database schema. It has the `is_duplicate`, `duplicate_of`, `notification_sent` and `notification_date` columns and the indexes on date, sender and subject. |
 | `sample_queries.sql` | Five queries: emails per sender, emails in a date range, emails with CC, parse failures by reason, emails per mailbox. Run them with `sqlite3 output/enron.db < sample_queries.sql`. |
 | `mcp_config.json.example` | The Gmail MCP server entry, with no secrets. |
-| `requirements.txt` | The Python libraries. |
+| `requirements.txt` | The Python libraries, and `-e .` to install this project itself, so one `pip install -r requirements.txt` is enough. |
 
 ## 9. Results
 
