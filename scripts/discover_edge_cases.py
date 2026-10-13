@@ -37,7 +37,7 @@ import random
 import re
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from email import policy
 from email.parser import BytesParser
 
@@ -492,7 +492,7 @@ def write_discovery(out_dir: str, stats: dict):
     line("| count | normalized line | example source |")
     line("|---|---|---|")
     for norm, n in stats["line_interesting"].most_common(100):
-        orig, path = stats["line_example"].get(norm, (norm, ""))
+        _, path = stats["line_example"].get(norm, (norm, ""))
         safe = norm.replace("|", "\\|")
         line(f"| {n:,} | `{safe}` | {path} |")
     line()

@@ -87,17 +87,8 @@ def make_flag(
 # --- the spec template -----------------------------------------------------------------
 
 
-# The assignment has been kept under both spellings (docs/assignment.md, then
-# docs/ASSIGNMENT.md), so look for either.
-SPEC_FILES = ("ASSIGNMENT.md", "assignment.md")
-
-
 def spec_text() -> str:
-    for name in SPEC_FILES:
-        path = ROOT / "docs" / name
-        if path.exists():
-            return path.read_text()
-    raise FileNotFoundError(f"the assignment is not in docs/ (looked for {', '.join(SPEC_FILES)})")
+    return (ROOT / "docs" / "ASSIGNMENT.md").read_text()
 
 
 def spec_template() -> tuple[list[str], list[str]]:

@@ -103,15 +103,6 @@ def parse_body(
     )
 
 
-def compute_content_hash(body: str) -> str:
-    """Hash used to find storage copies (emails.content_hash).
-
-    What goes into the hash (body only vs body plus sender and subject) is not
-    decided yet; it belongs to the dedup plan.
-    """
-    raise NotImplementedError
-
-
 # --- Line endings and quoted-printable -----------------------------------------
 
 

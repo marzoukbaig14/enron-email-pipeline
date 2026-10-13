@@ -26,7 +26,7 @@ import re
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

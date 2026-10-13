@@ -79,7 +79,6 @@ def parse_body(
     content_type: str | None = None,
     content_transfer_encoding: str | None = None,
 ) -> ParsedBody
-def compute_content_hash(body: str) -> str          # input definition: see open question 4
 ```
 
 Inputs: the decoded body string, the Content-Type header value (attachment inference, and the charset used when decoding quoted-printable) and the Content-Transfer-Encoding header value (quoted-printable is decoded only when it says so). Behavior is fixed by D-019.
@@ -204,7 +203,7 @@ Behavior is fixed by D-021, with stage 1 extended by D-023: stage 1 collapses st
 Inputs: a DB connection and the threshold. Dedup reads and writes through the `db` functions above and runs no SQL of its own.
 Must NOT: import ingest or notify, send anything, set `notification_*`.
 
-*Changes from the first version of this plan (D-021): dedup now imports `db` (D-021 item 13; the table in section 6 changes from "models" to "models, db"). `mark_storage_copies` returns `StorageCopyStats(groups, rows)` instead of an int, because the stats need the group count. `DedupStats` gained the storage-copy numbers and `largest_group_size`, and `groups` is now `duplicate_groups`. `content_hash_for`, `StorageCopyStats` and `write_stats` are new. `content_hash` is computed by dedup from the stored columns, not by ingest, so `parse_body.compute_content_hash` is no longer needed.*
+*Changes from the first version of this plan (D-021): dedup now imports `db` (D-021 item 13; the table in section 6 changes from "models" to "models, db"). `mark_storage_copies` returns `StorageCopyStats(groups, rows)` instead of an int, because the stats need the group count. `DedupStats` gained the storage-copy numbers and `largest_group_size`, and `groups` is now `duplicate_groups`. `content_hash_for`, `StorageCopyStats` and `write_stats` are new. `content_hash` is computed by dedup from the stored columns, not by ingest, so the unused `parse_body.compute_content_hash` stub was removed.*
 
 ### notify.py
 **Responsibility:** render the spec notification and hand it to a sender.
