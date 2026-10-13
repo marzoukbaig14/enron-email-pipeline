@@ -208,7 +208,7 @@ The spec asks for at least 5 mailboxes and at least 10,000 emails. This project 
 | `output/send_log_dry_run.csv` | One row per draft: `timestamp, recipient, subject, status, error`. Status is `dry_run`. |
 | `output/send_log.csv` | The log of live sends only, same columns. Status is `sent` or `failed`. Live runs add to it. Holds the final live run: 222 rows, all `sent`. |
 | `schema.sql` | The database schema. It has the `is_duplicate`, `duplicate_of`, `notification_sent` and `notification_date` columns and the indexes on date, sender and subject. |
-| `sample_queries.sql` | Five queries: emails per sender, emails in a date range, emails with CC, parse failures by reason, emails per mailbox. Run them with `sqlite3 output/enron.db < sample_queries.sql`. |
+| `sample_queries.sql` | Six queries: emails per sender, emails in a date range, emails with CC, parse failures by reason, emails per mailbox, and flagged duplicates next to their originals (the same rows as `duplicates_report.csv`, most similar first). Run them with `sqlite3 output/enron.db < sample_queries.sql`. |
 | `mcp_config.json.example` | The Gmail MCP server entry, with no secrets. |
 | `requirements.txt` | The Python libraries, and `-e .` to install this project itself, so one `pip install -r requirements.txt` is enough. |
 
@@ -286,7 +286,6 @@ An earlier one-notice smoke test came first. The received email had both the `In
 - **626 files (3.3%) are not stored.** They have no `To` header. The spec makes it mandatory.
 - **Attachments are guessed.** The dataset has no attachments. `has_attachment` is true when the text has a `<<file>>` reference or the word "attached" or "attachment(s)" in the new text.
 - **Tests use synthetic emails.** There are no integration tests on real files. The real-data checks were done by hand and are written up in `docs/exploration/` and in `docs/DECISIONS.md`.
-- **`sample_queries.sql` has no duplicate queries yet.** Query 6 is a placeholder comment.
 
 ## 11. Tests
 
@@ -294,6 +293,6 @@ An earlier one-notice smoke test came first. The received email had both the `In
 python -m pytest -q
 ```
 
-There are **846 tests**. They run in about 7 seconds. They need no dataset and no network. They use small made-up emails, and the MCP session is mocked. Nothing is ever sent.
+There are **851 tests**. They run in under 10 seconds. They need no dataset and no network. They use small made-up emails, and the MCP session is mocked. Nothing is ever sent.
 
 They cover each module, the command line (one mailbox, many mailboxes, a missing mailbox, bad option values), the notice text (one test compares a whole notice with a fixed string) and a check that no library module reads the command line or the environment.

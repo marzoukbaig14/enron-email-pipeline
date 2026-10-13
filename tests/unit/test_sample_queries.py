@@ -4,7 +4,7 @@ Every query must run as written against the real schema.sql, and the
 "-- Columns:" line above it must match the columns it really returns, so the
 documented output shape cannot drift from the SQL. A small seeded database
 also checks the results the comments promise (top 10 limit, date boundaries,
-CC-only counting, ordering).
+CC-only counting, ordering, and the flagged-duplicates join).
 """
 import sqlite3
 from datetime import datetime, timezone
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from enron_pipeline import db
+from enron_pipeline import db, dedup
 from enron_pipeline.models import EmailRecord, ParseFailure, Recipient
 
 SQL_FILE = Path(__file__).resolve().parents[2] / "sample_queries.sql"
@@ -23,8 +23,8 @@ def load_queries() -> list[dict]:
 
     A statement ends where sqlite3.complete_statement says so. The comment
     lines collected before it supply the title (the "N. Title" line) and the
-    "Columns:" list. A trailing comment block with no statement (the duplicate
-    placeholder) produces no query.
+    "Columns:" list. A trailing comment block with no statement produces no
+    query.
     """
     queries, buffer = [], []
     for line in SQL_FILE.read_text().splitlines():
@@ -110,18 +110,23 @@ def test_every_query_describes_what_it_shows_and_the_expected_output():
         assert query["columns"], query["title"]
 
 
-def test_there_is_a_placeholder_for_duplicate_queries():
+def test_there_are_six_queries_and_the_sixth_is_the_duplicate_query():
+    assert len(QUERIES) == 6
+    assert "duplicate" in QUERIES[5]["title"].lower()
+
+
+def test_no_todo_or_placeholder_is_left_in_the_file():
     text = SQL_FILE.read_text()
-    assert "Duplicate queries (placeholder)" in text
-    assert "TODO" in text.split("Duplicate queries (placeholder)")[1]
+    assert "TODO" not in text
+    assert "placeholder" not in text.lower()
 
 
-def test_the_placeholder_adds_no_runnable_statement():
-    # Only the commented-out placeholder follows the last query.
-    assert len(QUERIES) == 5
+def test_the_duplicate_query_returns_the_columns_of_duplicates_report_csv():
+    # Same seven columns, in the same order, as the spec's report (D-021 item 11).
+    assert QUERIES[5]["columns"] == list(dedup.REPORT_COLUMNS)
 
 
-@pytest.mark.parametrize("number", range(1, 6))
+@pytest.mark.parametrize("number", range(1, 7))
 def test_each_query_runs_on_an_empty_database_with_the_documented_columns(seeded, number):
     columns, rows = run(seeded, number)
     assert columns == QUERIES[number - 1]["columns"]
@@ -234,3 +239,79 @@ def test_emails_per_mailbox_adds_up_to_the_total(seeded):
     assert sum(count for _, count in rows) == seeded.execute(
         "SELECT COUNT(*) FROM emails"
     ).fetchone()[0]
+
+
+def flagged(n, original, score, date, sender="a@enron.com", subject=None):
+    """An email that dedup flagged as a duplicate of <original>."""
+    return EmailRecord(
+        message_id=f"<{n}@thyme>",
+        date=date,
+        from_address=sender,
+        subject=subject or f"Subject {n}",
+        body="body",
+        source_file=f"maildir/beck-s/inbox/{n}.",
+        mailbox="beck-s",
+        is_duplicate=True,
+        duplicate_of=f"<{original}@thyme>",
+        similarity_score=score,
+    )
+
+
+def test_flagged_duplicates_are_listed_with_their_originals_most_similar_first(seeded):
+    db.insert_email(seeded, record(1, date=utc(2001, 5, 1)))  # an original
+    db.insert_email(seeded, record(10, sender="b@enron.com", date=utc(2001, 5, 2)))  # another
+    db.insert_email(seeded, flagged(2, 1, 95.5, utc(2001, 5, 5), subject="Re: Subject 1"))
+    db.insert_email(seeded, flagged(3, 1, 100.0, utc(2001, 5, 9)))
+    db.insert_email(seeded, flagged(4, 1, 100.0, utc(2001, 5, 7)))  # ties with 3: earlier date first
+    db.insert_email(seeded, flagged(11, 10, 91.25, utc(2001, 5, 8), sender="b@enron.com"))
+    db.insert_email(seeded, record(20, date=utc(2001, 5, 3)))  # not a duplicate: absent
+    db.insert_email(
+        seeded,
+        EmailRecord(  # a storage copy of email 1 (copy_of set, but not flagged): absent
+            message_id="<21@thyme>", date=utc(2001, 5, 1), from_address="a@enron.com",
+            subject="Subject 1", body="body", source_file="maildir/ring-a/inbox/21.",
+            mailbox="ring-a", copy_of="<1@thyme>",
+        ),
+    )
+
+    columns, rows = run(seeded, 6)
+
+    assert columns == [
+        "duplicate_message_id", "original_message_id", "subject", "from_address",
+        "duplicate_date", "original_date", "similarity_score",
+    ]
+    assert rows == [
+        ("<4@thyme>", "<1@thyme>", "Subject 4", "a@enron.com", "2001-05-07T12:00:00Z", "2001-05-01T12:00:00Z", 100.0),
+        ("<3@thyme>", "<1@thyme>", "Subject 3", "a@enron.com", "2001-05-09T12:00:00Z", "2001-05-01T12:00:00Z", 100.0),
+        ("<2@thyme>", "<1@thyme>", "Re: Subject 1", "a@enron.com", "2001-05-05T12:00:00Z", "2001-05-01T12:00:00Z", 95.5),
+        ("<11@thyme>", "<10@thyme>", "Subject 11", "b@enron.com", "2001-05-08T12:00:00Z", "2001-05-02T12:00:00Z", 91.25),
+    ]
+
+
+def test_the_duplicate_query_has_one_row_per_flagged_email(seeded):
+    db.insert_email(seeded, record(1, date=utc(2001, 5, 1)))
+    for n in (2, 3, 4):
+        db.insert_email(seeded, flagged(n, 1, 90.0 + n, utc(2001, 5, n)))
+    _, rows = run(seeded, 6)
+    assert len(rows) == seeded.execute("SELECT COUNT(*) FROM emails WHERE is_duplicate = 1").fetchone()[0] == 3
+
+
+def test_the_duplicate_query_agrees_with_what_dedup_really_flags(seeded):
+    # Not hand-written flags: let the real dedup stages decide, then read the result back.
+    for n in (1, 2, 3):
+        db.insert_email(seeded, EmailRecord(
+            message_id=f"<{n}@thyme>", date=utc(2001, 5, n), from_address="a@enron.com",
+            subject="Q2 numbers" if n != 2 else "Re: Q2 numbers",
+            body="Hello team, the Q2 numbers are ready for review on Friday.",
+            source_file=f"maildir/beck-s/inbox/{n}.", mailbox="beck-s",
+        ))
+    dedup.mark_storage_copies(seeded)
+    flags = dedup.flag_duplicates(seeded)
+    assert len(flags) == 2
+
+    _, rows = run(seeded, 6)
+
+    assert {(r[0], r[1], r[6]) for r in rows} == {
+        (f.duplicate_message_id, f.original_message_id, f.similarity_score) for f in flags
+    }
+    assert {r[2] for r in rows} == {"Re: Q2 numbers", "Q2 numbers"}  # each flagged email's own subject

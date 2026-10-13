@@ -103,11 +103,34 @@ GROUP BY mailbox
 ORDER BY email_count DESC, mailbox;
 
 
--- 6. Duplicate queries (placeholder)
--- TODO: add after dedup is built. Planned, using the is_duplicate,
---   duplicate_of and similarity_score columns:
---     - flagged duplicates next to their originals, with similarity score;
---     - number of emails flagged per sender;
---     - storage copies (copy_of is not NULL) grouped by original.
---   Each will follow the format above: a Shows line, an Expected output
---   line and a Columns line.
+-- 6. Flagged duplicates next to their originals
+-- Shows: every email that dedup flagged as a duplicate (is_duplicate = 1),
+--   joined to the original it repeats (duplicate_of), with both dates and the
+--   similarity score, most similar first (D-021). These are the same rows and
+--   columns as duplicates_report.csv, in a different order: the CSV is sorted
+--   by original, this one by similarity. The join uses the unique index on
+--   message_id. The score is shown with 2 decimals but sorted unrounded.
+-- Expected output: one row per flagged email. similarity_score lies between
+--   the threshold (90 by default) and 100 and never increases down the list;
+--   ties are ordered by the duplicate's date. original_date is never later
+--   than duplicate_date. Storage copies (copy_of is set) and emails that were
+--   not flagged do not appear. Zero rows is valid if nothing was flagged.
+-- Real result (D-013 mailboxes): 540 rows from 222 distinct originals, the
+--   same as the 222 duplicate groups. 66 rows score exactly 100. The first is
+--   "Organizational Changes" from office.chairman@enron.com, flagged at
+--   2000-05-08T06:21:00Z against an original sent 2000-05-05T17:33:00Z. The
+--   last is "Vermont Yankee Notification" from bobbi.kilburn@vynpc.com, with
+--   a score of 90.15.
+-- Columns: duplicate_message_id, original_message_id, subject, from_address, duplicate_date, original_date, similarity_score
+SELECT d.message_id AS duplicate_message_id,
+       o.message_id AS original_message_id,
+       d.subject,
+       d.from_address,
+       d.date AS duplicate_date,
+       o.date AS original_date,
+       ROUND(d.similarity_score, 2) AS similarity_score
+FROM emails AS d
+JOIN emails AS o
+  ON o.message_id = d.duplicate_of
+WHERE d.is_duplicate = 1
+ORDER BY d.similarity_score DESC, d.date, d.id;
