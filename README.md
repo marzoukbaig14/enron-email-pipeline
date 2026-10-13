@@ -153,11 +153,11 @@ This is only needed for live sends. The server is [@gongrzhe/server-gmail-autoau
    ```
 6. Sign in once. A browser opens. Use the test-user account. The server saves its token to `~/.gmail-mcp/credentials.json`.
    ```bash
-   npx @gongrzhe/server-gmail-autoauth-mcp auth
+   npx -y @gongrzhe/server-gmail-autoauth-mcp auth
    ```
 7. Register the server with Claude Code:
    ```bash
-   claude mcp add gmail --scope user -- npx @gongrzhe/server-gmail-autoauth-mcp
+   claude mcp add gmail --scope user -- npx -y @gongrzhe/server-gmail-autoauth-mcp
    ```
 
 Check that it works:

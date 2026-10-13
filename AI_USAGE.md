@@ -221,8 +221,8 @@ I used the **GongRzhe Gmail MCP server** (`@gongrzhe/server-gmail-autoauth-mcp`)
 4. Add yourself as a test user on the Audience page (issue 2).
 5. Create an OAuth client of type **Desktop app** and download the JSON.
 6. Save it as `~/.gmail-mcp/gcp-oauth.keys.json`.
-7. Sign in once with `npx @gongrzhe/server-gmail-autoauth-mcp auth`. Approve in the browser. The server saves `~/.gmail-mcp/credentials.json`.
-8. Register it with Claude Code: `claude mcp add gmail --scope user -- npx @gongrzhe/server-gmail-autoauth-mcp`
+7. Sign in once with `npx -y @gongrzhe/server-gmail-autoauth-mcp auth`. Approve in the browser. The server saves `~/.gmail-mcp/credentials.json`.
+8. Register it with Claude Code: `claude mcp add gmail --scope user -- npx -y @gongrzhe/server-gmail-autoauth-mcp`
 9. Restart Claude Code and check `/mcp` (issue 5).
 
 The pipeline doesn't need step 8. Python starts its own copy of the server and only needs the two files in `~/.gmail-mcp/`. Those files are never committed. `mcp_config.json.example` shows the server entry, with no secrets.

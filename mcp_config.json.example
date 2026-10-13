@@ -2,14 +2,18 @@
   "mcpServers": {
     "gmail": {
       "command": "npx",
-      "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"]
+      "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+      "env": {
+        "GMAIL_OAUTH_PATH": "/path/to/gcp-oauth.keys.json",
+        "GMAIL_CREDENTIALS_PATH": "/path/to/credentials.json"
+      }
     }
   },
   "_notes": [
-    "Structure only: copy the 'gmail' entry into your MCP client's config (for Claude Code: claude mcp add gmail -- npx -y @gongrzhe/server-gmail-autoauth-mcp). This file holds no secrets.",
-    "The server reads its Google OAuth client from ~/.gmail-mcp/gcp-oauth.keys.json (YOUR Google Cloud OAuth client file; create it in the Google Cloud console, never commit it).",
-    "After the one-time browser sign-in the server stores its token in ~/.gmail-mcp/credentials.json (never commit it). See the server's README for the sign-in step.",
-    "The pipeline's live sender (notify.McpSender) launches this same command itself over stdio, so it does not need this file. It only needs the two ~/.gmail-mcp files above.",
+    "Structure only: copy the 'gmail' entry into your MCP client's config (for Claude Code: claude mcp add gmail --scope user -- npx -y @gongrzhe/server-gmail-autoauth-mcp). This file holds no secrets.",
+    "The 'env' block is optional. The server reads its Google OAuth client file from GMAIL_OAUTH_PATH and its saved token from GMAIL_CREDENTIALS_PATH (variable names checked against server version 1.1.11). Without them it uses ~/.gmail-mcp/gcp-oauth.keys.json and ~/.gmail-mcp/credentials.json. Replace the placeholder paths with your own, or delete the block to use those defaults.",
+    "gcp-oauth.keys.json is YOUR Google Cloud OAuth client file (create it in the Google Cloud console). credentials.json is written by the server after the one-time browser sign-in (see the server's README). Never commit either file.",
+    "The pipeline's live sender (notify.McpSender) launches the same command itself over stdio, so it does not need this file. It does not pass the two variables above to the server, so it always uses the default ~/.gmail-mcp files.",
     "Live mode (python main.py --send-live) also needs NOTIFY_TO set to the address that should receive the notices, e.g. export NOTIFY_TO=you@example.com"
   ]
 }
